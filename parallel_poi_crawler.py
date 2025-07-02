@@ -149,7 +149,7 @@ class ParallelPOICrawler:
             if more_button:
                 click_on_more_button(driver)
                 scroll_poi_section(driver)
-                has_scrolled = True
+                #has_scrolled = True
             
             df = get_all_poi_info(driver)
             
@@ -165,15 +165,17 @@ class ParallelPOICrawler:
                 df['lng'] = lng
                 # comment_count已经在get_all_poi_info中为每个POI单独设置
                 
-                
+                # 单地址完成总结
+                print(f"{address}  | POI: {poi_count}")
 
                 return df
             
+            else:
             # 单地址完成总结
-            print(f"{address} | 建筑物: {'是' if is_building else '否'} | 滑动: {'有' if has_scrolled else '无'} | POI: {poi_count}")
-        
+                print(f"{address}  | POI: {poi_count}")
+                return None
         else:# 非建筑物也输出总结
-            print(f"{address} | 建筑物: {'是' if is_building else '否'}")
+            print(f"{address} | 建筑物: {'是' if is_building else '否'} | POI: {poi_count}")
             return None
 
     def process_batch(self, addresses_batch, batch_id):
