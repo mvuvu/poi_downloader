@@ -10,6 +10,9 @@
 - 💾 **断点续爬**: 支持中断后继续，数据不丢失
 - 📊 **实时监控**: 详细进度显示和统计信息
 - ⚙️ **配置灵活**: 支持自定义爬取参数
+- 🔥 **无头模式**: 后台运行，不显示Chrome窗口
+- 📂 **智能文件选择**: 自动扫描和选择输入文件
+- 📈 **增强数据**: 9个字段包含评论数、电话、网站等
 
 ## 🎯 主要优化
 
@@ -44,7 +47,36 @@ cd poi_crawler
 python init.py
 ```
 
-### 2. 准备数据
+### 2. 🔥 多种启动方式
+
+#### 方式一：智能启动器 (推荐)
+```bash
+# 一键启动，自动选择模式
+python run_crawler.py
+```
+
+#### 方式二：交互式文件选择
+```bash
+# 自动扫描并选择文件
+python final_crawler.py --interactive
+```
+
+#### 方式三：命令行参数
+```bash
+# 指定输入输出文件
+python final_crawler.py --input data/input/your_file.csv --output results.csv
+
+# 自定义并发数和显示模式
+python final_crawler.py --workers 2 --no-headless
+```
+
+#### 方式四：Jupyter Notebook
+```bash
+# 交互式可视化爬取
+jupyter notebook enhanced_poi_crawler.ipynb
+```
+
+### 3. 准备数据
 
 将包含地址信息的CSV文件放入 `data/input/` 目录，文件格式：
 
@@ -52,12 +84,6 @@ python init.py
 District,Latitude,Longitude,Address
 千代田区,35.6862245,139.7347045,東京都千代田区鍛冶町1丁目7-1
 千代田区,35.6903667,139.7712745,東京都千代田区二番町10-46
-```
-
-### 3. 运行爬虫
-
-```bash
-python final_crawler.py
 ```
 
 ## 📁 项目结构

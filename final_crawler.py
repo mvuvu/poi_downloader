@@ -27,6 +27,7 @@ try:
         safe_get_building_name, safe_get_coords, safe_get_all_poi_info
     )
     from enhanced_driver_actions import click_on_more_button, scroll_poi_section
+    from file_selector import select_files_command_line, FileSelector
     print("✅ 增强版工具函数导入成功")
 except ImportError as e:
     print(f"❌ 工具函数导入失败: {e}")
@@ -394,43 +395,151 @@ class FinalPOICrawler:
         self.driver_pool.close_all()
 
 def main():
-    # 高性能配置 - 优化版
-    config = {
-        'max_workers': 4,  # 增加并发数
-        'driver_pool_size': 4,  # 增加WebDriver池
-        'batch_size': 15,  # 适中的批量大小
-        'timeout': 12,  # 减少超时时间
-        'retry_times': 2,  # 减少重试次数
-        'headless': True,  # 强制无头模式
-        'checkpoint_interval': 30,  # 更频繁保存检查点
-        'input_file': 'data/input/千代田区_complete_1751433587.csv',
-        'output_file': '千代田区_poi_高性能版.csv'
-    }
-    
-    print("🎯 最终版POI爬虫")
+    """主函数 - 支持文件选择"""
+    print("🎯 增强版POI爬虫")
     print("=" * 60)
     
+    # 添加命令行参数支持
+    import argparse
+    parser = argparse.ArgumentParser(description='POI爬虫工具')
+    parser.add_argument('--input', '-i', help='输入CSV文件路径')
+    parser.add_argument('--output', '-o', help='输出CSV文件路径')
+    parser.add_argument('--workers', '-w', type=int, default=4, help='并发线程数 (默认: 4)')
+    parser.add_argument('--headless', action='store_true', help='无头模式运行')
+    parser.add_argument('--no-headless', action='store_true', help='显示Chrome窗口')
+    parser.add_argument('--interactive', action='store_true', help='交互式文件选择')
+    args = parser.parse_args()
+    
+    # 文件选择逻辑
+    input_file = None
+    output_file = None
+    
+    if args.interactive or (not args.input and not args.output):
+        print("📂 启动交互式文件选择...")
+        input_file, output_file = select_files_command_line()
+        
+        if not input_file:
+            print("❌ 未选择输入文件，程序退出")
+            return
+            
+    else:
+        input_file = args.input
+        output_file = args.output
+    
+    # 如果仍然没有输入文件，使用默认文件
+    if not input_file:
+        default_input = 'data/input/千代田区_complete_1751433587.csv'
+        if Path(default_input).exists():
+            input_file = default_input
+            print(f"📄 使用默认输入文件: {input_file}")
+        else:
+            print("❌ 没有指定输入文件且默认文件不存在")
+            return
+    
+    # 生成输出文件名
+    if not output_file:
+        selector = FileSelector()
+        output_file = selector.generate_output_filename(input_file, "poi_enhanced")
+        print(f"📁 自动生成输出文件: {output_file}")
+    
+    # 确定是否使用无头模式
+    headless = True  # 默认无头模式
+    if args.no_headless:
+        headless = False
+    elif args.headless:
+        headless = True
+    
+    # 高性能配置
+    config = {
+        'max_workers': args.workers,
+        'driver_pool_size': args.workers,
+        'batch_size': 15,
+        'timeout': 12,
+        'retry_times': 2,
+        'headless': headless,
+        'checkpoint_interval': 30,
+        'input_file': input_file,
+        'output_file': output_file
+    }
+    
+    print(f"\n⚙️ 运行配置:")
+    print(f"  📥 输入文件: {config['input_file']}")
+    print(f"  📤 输出文件: {config['output_file']}")
+    print(f"  🔧 并发线程: {config['max_workers']}")
+    print(f"  {'🔥' if config['headless'] else '🖥️'} 运行模式: {'无头模式 (后台)' if config['headless'] else '显示Chrome窗口'}")
+    
     try:
+        # 验证输入文件
         df_input = pd.read_csv(config['input_file'])
-        print(f"📄 成功读取: {config['input_file']}")
-        print(f"  数据行数: {len(df_input)}")
+        print(f"\n📊 输入文件统计:")
+        print(f"  数据行数: {len(df_input):,}")
+        print(f"  列名: {list(df_input.columns)}")
         
-        addresses = df_input['Address'].dropna().tolist()
-        print(f"📍 准备处理 {len(addresses)} 个地址")
+        # 获取地址列表
+        if 'Address' in df_input.columns:
+            addresses = df_input['Address'].dropna().tolist()
+        else:
+            print("⚠️ 未找到'Address'列，尝试使用第一列")
+            addresses = df_input.iloc[:, 0].dropna().tolist()
         
-        # 处理所有地址 - 生产模式
-        print(f"🚀 生产模式：处理全部 {len(addresses)} 个地址")
+        print(f"  有效地址: {len(addresses):,} 个")
         
+        if len(addresses) == 0:
+            print("❌ 没有有效地址数据")
+            return
+        
+        # 预估时间
+        estimated_time = len(addresses) * 2.5 / config['max_workers'] / 60
+        print(f"  ⏱️ 预计耗时: {estimated_time:.1f} 分钟")
+        
+        # 确认执行
+        if len(addresses) > 100:
+            print(f"\n⚠️ 将要处理 {len(addresses):,} 个地址，这可能需要较长时间")
+            confirm = input("确认继续？(y/n): ").lower()
+            if confirm != 'y':
+                print("❌ 已取消执行")
+                return
+        
+        print(f"\n🚀 开始爬取...")
+        start_time = time.time()
+        
+        # 创建爬虫并运行
         crawler = FinalPOICrawler(config)
-        crawler.process_addresses(addresses)
-        
+        try:
+            crawler.process_addresses(addresses)
+            
+            elapsed_time = time.time() - start_time
+            print(f"\n🎉 爬取完成！")
+            print(f"⏱️ 总耗时: {elapsed_time/60:.1f} 分钟")
+            print(f"📈 平均速度: {elapsed_time/len(addresses):.1f} 秒/地址")
+            print(f"📁 结果文件: {config['output_file']}")
+            
+        except KeyboardInterrupt:
+            print("\n⏹️ 用户中断爬取")
+        except Exception as e:
+            print(f"\n❌ 爬取过程中发生错误: {e}")
+        finally:
+            crawler.close()
+            
+    except FileNotFoundError:
+        print(f"❌ 输入文件不存在: {config['input_file']}")
     except Exception as e:
         print(f"❌ 运行失败: {e}")
-    finally:
-        try:
-            crawler.close()
-        except:
-            pass
+
+def run_with_file_selection():
+    """仅文件选择模式运行"""
+    print("📂 POI爬虫 - 文件选择模式")
+    input_file, output_file = select_files_command_line()
+    
+    if input_file and output_file:
+        # 直接运行爬虫
+        import subprocess
+        import sys
+        
+        cmd = [sys.executable, __file__, '--input', input_file, '--output', output_file]
+        subprocess.run(cmd)
+    else:
+        print("❌ 文件选择失败或被取消")
 
 if __name__ == "__main__":
     main()
