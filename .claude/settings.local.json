@@ -9,7 +9,10 @@
       "Bash(echo:*)",
       "Bash(true)",
       "Bash(timeout 120 python:*)",
-      "Bash(timeout 240 python final_crawler.py 1)"
+      "Bash(timeout 240 python final_crawler.py 1)",
+      "Bash(rg:*)",
+      "Bash(pkill:*)",
+      "Bash(mv:*)"
     ],
     "deny": []
   }

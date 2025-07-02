@@ -1,29 +1,6 @@
-# POI爬虫依赖包
-# 核心爬取依赖
 selenium>=4.15.0
-webdriver-manager>=4.0.0
-beautifulsoup4>=4.12.0
-
-# 数据处理
+webdriver-manager>=4.0.1
+beautifulsoup4>=4.12.2
 pandas>=2.0.0
-numpy>=1.24.0
-
-# 进度显示和并发
-tqdm>=4.65.0
-
-# 重试机制
-tenacity>=8.2.0
-
-# 配置和日志
-python-dateutil>=2.8.0
-
-# Jupyter支持 (可选)
-jupyter>=1.0.0
-ipywidgets>=8.0.0
-
-# 开发和测试 (可选)
-pytest>=7.0.0
-pytest-cov>=4.0.0
-
-# 性能优化 (可选)
-lxml>=4.9.0
+tqdm>=4.66.0
+lxml>=4.9.3
