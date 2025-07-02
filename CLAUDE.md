@@ -25,22 +25,26 @@ Real-time CSV Append (District Named File)
 - **Output**: Single CSV file per district: `data/output/[区名]_poi_data_[timestamp].csv`
 - **Fields**: `name,rating,class,add,comment_count,blt_name,lat,lng`
 
-## Running the Crawler
+## Commands
 
 ### Installation
 ```bash
 pip install -r requirements.txt
 ```
 
-### Parallel Crawler (Recommended)
+### Running the Crawler
 ```bash
-python parallel_poi_crawler.py data/input/your_addresses.csv
+# Batch process all districts (recommended)
+python parallel_poi_crawler.py --all
+
+# Process single district file
+python parallel_poi_crawler.py data/input/your_district.csv
 ```
 
 ### Configuration
-- Default: 4 parallel workers, batch size of 20 addresses
-- Modify `ParallelPOICrawler(max_workers=4, batch_size=20)` for different settings
-- Uses headless Chrome with optimized options for performance
+- Default: CPU cores-1 workers, batch size of 50 addresses  
+- Modify `ParallelPOICrawler(max_workers=4, batch_size=50)` in code for different settings
+- Chrome runs completely headless with performance optimizations
 
 ### Output Format
 - Silent crawling with per-address summary: `Address | 建筑物: Yes/No | 滑动: Yes/No | POI: count`
@@ -70,12 +74,13 @@ These XPaths are fragile and may break with Google Maps UI changes.
 
 ## Dependencies
 
-Required Python packages (create requirements.txt):
-- selenium
-- webdriver-manager
-- beautifulsoup4
-- pandas
-- tqdm
+Core Python packages from requirements.txt:
+- selenium>=4.15.0 - Browser automation
+- webdriver-manager>=4.0.1 - Chrome driver management  
+- beautifulsoup4>=4.12.2 - HTML parsing
+- pandas>=2.0.0 - Data processing
+- tqdm>=4.66.0 - Progress bars
+- lxml>=4.9.3 - XML/HTML parsing
 
 ## Development Notes
 
@@ -97,5 +102,14 @@ Required Python packages (create requirements.txt):
 - Complete Chrome silence eliminates noise
 - Chrome driver management is critical for stability
 
-### Testing
-Currently no automated tests exist. Building type detection may need debugging if all addresses show "建筑物: 否".
+### Critical Implementation Details
+- **Batch processing logic**: Uses ProcessPoolExecutor with concurrent.futures for true parallelism
+- **Data persistence**: Real-time CSV append prevents data loss during long-running operations
+- **Error isolation**: Individual address failures don't affect other processes or batches
+- **Memory efficiency**: Processes results in batches rather than loading entire datasets
+
+### Testing & Debugging
+No automated tests exist. Common debugging scenarios:
+- All addresses show "建筑物: 否" → Check XPath selectors in info_tool.py:33-40
+- Process hangs → Network timeout, restart with lower batch_size
+- Memory issues → Reduce max_workers or batch_size for large districts

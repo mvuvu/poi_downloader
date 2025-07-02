@@ -55,19 +55,3 @@ def scroll_poi_section(driver):
 
 
 
-def expand_full_comment(driver):
-    # 點擊展開評論全文的按鈕
-    time.sleep(6)
-    comment_section = driver.find_element(By.CLASS_NAME, 'm6QErb.DxyBCb.kA9KIf.dS8AEf')
-    driver.execute_script("arguments[0].scrollTop = arguments[1]", comment_section, 0)
-    comment_section = driver.find_element(By.CLASS_NAME, 'm6QErb.DxyBCb.kA9KIf.dS8AEf')
-    open_full_comment_button = driver.find_elements(By.CLASS_NAME,"w8nwRe.kyuRq")
-    
-    # 展開全文進度條
-    print('展開評論全文中...')
-    button_process = tqdm(total=len(open_full_comment_button))
-    
-    for button in open_full_comment_button:
-        button.click()
-        button_process.update(1)
-        

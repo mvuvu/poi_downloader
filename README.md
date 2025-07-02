@@ -79,16 +79,16 @@ python parallel_poi_crawler.py data/input/千代田区_complete.csv
 - **单区模式**：单个文件 `data/output/[区名]_poi_data_[timestamp].csv`
 
 ### 数据字段
-| 字段 | 说明 |
-|------|------|
-| name | POI名称 |
-| rating | 评分 |
-| class | POI分类 |
-| add | POI地址 |
-| comment_count | 该POI的评论数量 |
-| blt_name | 建筑物名称 |
-| lat | 纬度 |
-| lng | 经度 |
+| 字段 | 说明 | 来源函数 |
+|------|------|----------|
+| name | POI名称 | get_poi_name() |
+| rating | 评分 | get_rating() |
+| class | POI分类 | get_class_address() |
+| add | POI地址 | get_class_address() |
+| comment_count | 该POI的评论数量 | get_rating_count() |
+| blt_name | 建筑物名称 | get_building_name() |
+| lat | 纬度 | get_coords() |
+| lng | 经度 | get_coords() |
 
 ### 数据规模（东京23区）
 | 区名 | 地址数量 | 区名 | 地址数量 |
@@ -119,10 +119,10 @@ python parallel_poi_crawler.py data/input/specific_district.csv
 
 ### 性能调优
 ```python
-# 在代码中修改并发数和批次大小
+# 在代码中修改并发数和批次大小（parallel_poi_crawler.py第321行）
 crawler = ParallelPOICrawler(
     max_workers=4,    # 并发进程数（默认CPU核心数-1）
-    batch_size=20     # 批次大小（默认20）
+    batch_size=20     # 批次大小（实际代码默认50）
 )
 ```
 
@@ -135,15 +135,17 @@ crawler = ParallelPOICrawler(
 
 ```
 poi_crawler/
-├── parallel_poi_crawler.py    # 主程序-并行爬虫
-├── info_tool.py              # 数据提取工具
-├── driver_action.py          # 浏览器交互操作
+├── parallel_poi_crawler.py    # 主程序-并行爬虫(338行)
+├── info_tool.py              # 数据提取工具(200行)
+├── driver_action.py          # 浏览器交互操作(74行)
 ├── data/
-│   ├── input/               # 输入CSV文件
+│   ├── input/               # 输入CSV文件(23个区)
 │   └── output/              # 输出结果文件（以区命名）
-├── requirements.txt         # Python依赖
+├── requirements.txt         # Python依赖(6个包)
 ├── .gitignore              # Git忽略配置
-└── CLAUDE.md               # AI助手指南
+├── CLAUDE.md               # AI助手指南
+├── README.md               # 项目说明文档
+└── start.ipynb             # Jupyter笔记本(开发用)
 ```
 
 ## 核心技术

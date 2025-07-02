@@ -15,9 +15,9 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import WebDriverException, TimeoutException
 import sys
 
-from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, get_poi_comment_count
+from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
 from driver_action import click_on_more_button, scroll_poi_section
-# 移除过期的utilities导入
+
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -142,20 +142,26 @@ class ParallelPOICrawler:
             
             if df is not None and not df.empty:
                 poi_count = len(df)
-                lat, lng = get_coords(driver.current_url)
+                final_url = wait_for_coords_url(driver)
+                if final_url:
+                    lat, lng = get_coords(final_url)
+                else:
+                    print("❌ 没有拿到有效的坐标 URL")
                 df['blt_name'] = place_name
                 df['lat'] = lat
                 df['lng'] = lng
                 # comment_count已经在get_all_poi_info中为每个POI单独设置
                 
-                # 单地址完成总结
-                print(f"{address} | 建筑物: {'是' if is_building else '否'} | 滑动: {'是' if has_scrolled else '否'} | POI: {poi_count}")
                 
+
                 return df
+            
+            # 单地址完成总结
+            print(f"{address} | 建筑物: {'是' if is_building else '否'} | 滑动: {'有' if has_scrolled else '无'} | POI: {poi_count}")
         
-        # 非建筑物也输出总结
-        print(f"{address} | 建筑物: {'是' if is_building else '否'} | 滑动: {'是' if has_scrolled else '否'} | POI: {poi_count}")
-        return None
+        else:# 非建筑物也输出总结
+            print(f"{address} | 建筑物: {'是' if is_building else '否'}")
+            return None
 
     def process_batch(self, addresses_batch, batch_id):
         success_count = 0
