@@ -151,36 +151,40 @@ poi_crawler/
 ## 核心技术
 
 ### 依赖组件
-- **Selenium** - 浏览器自动化
-- **BeautifulSoup** - HTML解析  
-- **Pandas** - 数据处理
-- **ChromeDriver** - Chrome浏览器驱动
-- **multiprocessing** - 并行处理
+- **Selenium** - 浏览器自动化（ChromeDriver管理）
+- **BeautifulSoup** - HTML解析（lxml引擎）
+- **Pandas** - 数据处理和CSV操作
+- **webdriver-manager** - Chrome驱动自动管理
+- **ProcessPoolExecutor** - 多进程并行处理
+- **tqdm** - 进度条显示（部分功能已移除）
 
 ### 数据提取逻辑
-- 建筑物类型识别：通过XPath检测页面元素
-- POI信息解析：从HTML中提取名称、评分、分类、地址
-- 评论数量：正则表达式匹配 `评分(评论数)` 格式
-- 坐标获取：从URL中解析经纬度
+- **建筑物类型识别**：XPath `//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[2]/div/div[2]/span/span/span`
+- **POI信息解析**：BeautifulSoup解析HTML，提取名称、评分、分类、地址
+- **评论数量**：从 `UY7F9` class元素中提取括号内数字
+- **坐标获取**：从Google Maps URL中解析 `/@lat,lng` 格式
+- **滚动加载**：自动计算滚动次数，最多112次（1130条POI限制）
 
 ## 注意事项
 
-### 技术限制
-- 依赖Google Maps页面结构，UI变化可能影响爬取
-- XPath选择器可能因界面更新而失效
-- 建议合理控制请求频率
+### 关键实现细节
+- **Chrome配置**：完全静默模式，禁用图片/JS/GPU以提升性能
+- **并行架构**：ProcessPoolExecutor实现真正的多进程并行
+- **实时保存**：每个POI立即追加到CSV，防止数据丢失
+- **错误隔离**：单个地址失败不影响整批处理
+- **内存优化**：分批处理避免大数据集内存溢出
 
-### 性能建议  
-- 默认配置适合大多数场景
-- 大批量数据建议监控系统资源
-- 网络不稳定时可减少batch_size
+### 技术限制与解决方案
+- **XPath依赖**：界面变化需更新 `info_tool.py` 中的选择器
+- **Google Maps限制**：单个建筑物最多1130个POI
+- **网络稳定性**：建议监控网络状态，必要时降低batch_size
 
 ### 故障排除
-- **全部显示"建筑物: 否"** - 检查建筑物类型XPath选择器
-- **评论数量为0** - 检查HTML结构变化
-- **进程卡死** - 可能是网络超时，重启程序
-- **批量处理中断** - 数据已实时保存，可从中断处继续
-- **大区处理时间长** - 世田谷区等大区可能需要数小时
+- **建筑物识别失败** → 检查 `info_tool.py:39` XPath选择器
+- **POI数据缺失** → 验证CSS选择器 `Nv2PK.THOPZb.CpccDe` 和 `Nv2PK.Q2HXcd.THOPZb`
+- **进程卡死** → 检查Chrome驱动是否正常，重启程序
+- **数据重复** → 检查实时追加逻辑，确保CSV header正确
+- **大区耗时长** → 世田谷区(99,657地址)预计需要数小时
 
 ## 许可证
 
