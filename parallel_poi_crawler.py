@@ -29,6 +29,7 @@ class ParallelPOICrawler:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.batch_size = batch_size
         self.output_file = None
+        self._driver_pool = {}  # 驱动池缓存
         
     def create_driver(self):
 
@@ -79,45 +80,57 @@ class ParallelPOICrawler:
         
         return webdriver.Chrome(service=service, options=options)
 
-    def crawl_single_address(self, address_data):
-        worker_id, address, idx = address_data
+    def crawl_batch_addresses(self, addresses_batch):
+        """批量处理多个地址，减少进程间通信开销"""
+        batch_results = []
         driver = None
         
         try:
             driver = self.create_driver()
-            result = self._crawl_poi_info(address, driver)
             
-            if result is not None and not result.empty:
-                return {
-                    'success': True,
-                    'data': result,
-                    'address': address,
-                    'worker_id': worker_id,
-                    'index': idx
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': '未找到POI数据',
-                    'address': address,
-                    'worker_id': worker_id,
-                    'index': idx
-                }
-                
-        except Exception as e:
-            return {
-                'success': False,
-                'error': str(e),
-                'address': address,
-                'worker_id': worker_id,
-                'index': idx
-            }
+            for worker_id, address, idx in addresses_batch:
+                try:
+                    result = self._crawl_poi_info(address, driver)
+                    
+                    if result is not None and not result.empty:
+                        batch_results.append({
+                            'success': True,
+                            'data': result,
+                            'address': address,
+                            'worker_id': worker_id,
+                            'index': idx
+                        })
+                    else:
+                        batch_results.append({
+                            'success': False,
+                            'error': '未找到POI数据',
+                            'address': address,
+                            'worker_id': worker_id,
+                            'index': idx
+                        })
+                        
+                except Exception as e:
+                    batch_results.append({
+                        'success': False,
+                        'error': str(e),
+                        'address': address,
+                        'worker_id': worker_id,
+                        'index': idx
+                    })
+                    
         finally:
             if driver:
                 try:
                     driver.quit()
                 except:
                     pass
+                    
+        return batch_results
+
+    def crawl_single_address(self, address_data):
+        """兼容性保持：单地址处理"""
+        result = self.crawl_batch_addresses([address_data])
+        return result[0] if result else {'success': False, 'error': '处理失败'}
 
     def _crawl_poi_info(self, address, driver):
         url = f'https://www.google.com/maps/place/{address}'
@@ -167,26 +180,38 @@ class ParallelPOICrawler:
         success_count = 0
         error_count = 0
         
-        with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            address_tasks = [
-                (worker_id % self.max_workers, addr, idx) 
-                for idx, (worker_id, addr) in enumerate(addresses_batch)
+        # 将地址分组，每个进程处理更多地址以减少Chrome启动开销
+        addresses_per_worker = max(1, len(addresses_batch) // self.max_workers)
+        worker_batches = []
+        
+        for i in range(0, len(addresses_batch), addresses_per_worker):
+            worker_batch = [
+                (idx, addr, idx) 
+                for idx, (_, addr) in enumerate(addresses_batch[i:i+addresses_per_worker], i)
             ]
-            
-            future_to_address = {
-                executor.submit(self.crawl_single_address, task): task 
-                for task in address_tasks
+            if worker_batch:
+                worker_batches.append(worker_batch)
+        
+        # 使用异步方式提交任务，不等待单个任务完成
+        with ProcessPoolExecutor(max_workers=min(self.max_workers, len(worker_batches))) as executor:
+            future_to_batch = {
+                executor.submit(self.crawl_batch_addresses, batch): batch 
+                for batch in worker_batches
             }
             
-            for future in as_completed(future_to_address):
-                result = future.result()
+            # 批量收集结果并异步写入
+            all_results = []
+            for future in as_completed(future_to_batch):
+                batch_results = future.result()
+                all_results.extend(batch_results)
                 
-                if result['success']:
-                    # 实时追加到输出文件
-                    self._append_to_output_file(result['data'])
-                    success_count += 1
-                else:
-                    error_count += 1
+                # 分批写入以减少IO阻塞
+                success_data = [r['data'] for r in batch_results if r['success']]
+                if success_data:
+                    self._batch_append_to_output_file(success_data)
+                    
+                success_count += sum(1 for r in batch_results if r['success'])
+                error_count += sum(1 for r in batch_results if not r['success'])
         
         return success_count, error_count, success_count
 
@@ -197,6 +222,15 @@ class ParallelPOICrawler:
             
         # 追加模式写入CSV
         data.to_csv(self.output_file, mode='a', header=False, index=False, encoding='utf-8-sig')
+        
+    def _batch_append_to_output_file(self, data_list):
+        """批量追加多个DataFrame到输出文件，减少IO次数"""
+        if self.output_file is None or not data_list:
+            return
+            
+        # 合并所有DataFrame然后一次性写入
+        combined_df = pd.concat(data_list, ignore_index=True)
+        combined_df.to_csv(self.output_file, mode='a', header=False, index=False, encoding='utf-8-sig')
 
     def _extract_district_name(self, input_file):
         """从输入文件名提取区名"""
@@ -221,14 +255,18 @@ class ParallelPOICrawler:
         total_addresses = len(addresses)
         total_success = 0
         total_errors = 0
-        total_batches = (total_addresses + self.batch_size - 1) // self.batch_size
+        
+        # 使用更大的批次以减少批次间等待时间
+        optimized_batch_size = min(self.batch_size * 2, 100)  # 动态调整批次大小
+        total_batches = (total_addresses + optimized_batch_size - 1) // optimized_batch_size
         
         print(f"开始爬取 {district_name} {total_addresses} 个地址，分 {total_batches} 批次处理")
+        print(f"优化批次大小: {optimized_batch_size}, 最大并发: {self.max_workers}")
         print(f"输出文件: {self.output_file}\n")
         
         for batch_id in range(total_batches):
-            start_idx = batch_id * self.batch_size
-            end_idx = min(start_idx + self.batch_size, total_addresses)
+            start_idx = batch_id * optimized_batch_size
+            end_idx = min(start_idx + optimized_batch_size, total_addresses)
             
             batch_addresses = [
                 (i, addresses[i]) 
@@ -251,6 +289,24 @@ class ParallelPOICrawler:
         print(f"数据已保存到: {self.output_file}")
         return total_success, total_errors
 
+    def _warm_up_drivers(self):
+        """预热Chrome驱动实例，减少首次启动开销"""
+        print("正在预热Chrome驱动实例...")
+        test_driver = None
+        try:
+            test_driver = self.create_driver()
+            test_driver.get("https://www.google.com/maps")
+            time.sleep(2)  # 让页面完全加载
+            print("Chrome驱动预热完成")
+        except Exception as e:
+            print(f"Chrome驱动预热失败: {e}")
+        finally:
+            if test_driver:
+                try:
+                    test_driver.quit()
+                except:
+                    pass
+
     def crawl_all_districts(self, input_dir="data/input"):
         """批量处理input目录中的所有区文件"""
         input_path = Path(input_dir)
@@ -261,6 +317,9 @@ class ParallelPOICrawler:
             return
         
         print(f"发现 {len(csv_files)} 个区文件，开始批量处理...\n")
+        
+        # 预热驱动
+        self._warm_up_drivers()
         
         all_success = 0
         all_errors = 0
@@ -317,7 +376,8 @@ def main():
         print("  python parallel_poi_crawler.py --all")
         return
     
-    crawler = ParallelPOICrawler(max_workers=4, batch_size=20)
+    # 更优的默认配置：更多工作进程，更大批次
+    crawler = ParallelPOICrawler(max_workers=max(4, mp.cpu_count()), batch_size=30)
     
     if sys.argv[1] == "--all":
         # 批量处理所有区文件
