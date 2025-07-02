@@ -34,7 +34,7 @@ try:
         get_building_type_robust, is_building,
         safe_get_building_name, safe_get_coords, safe_get_all_poi_info
     )
-    from enhanced_driver_actions import click_on_more_button, scroll_poi_section
+    from enhanced_driver_actions import click_on_more_button, scroll_poi_section, get_poi_count_enhanced
     from simple_file_selector import get_simple_file_config
     print("✅ 增强版工具函数导入成功")
 except ImportError as e:
@@ -210,54 +210,79 @@ class FinalPOICrawler:
     def _crawl_single_poi(self, address, driver):
         max_retries = self.config['retry_times']
         
+        # 处理结果记录
+        result_info = {
+            'address': address,
+            'status': 'failed',
+            'reason': '',
+            'place_type': '',
+            'place_name': '',
+            'has_expand_button': False,
+            'poi_count': 0,
+            'attempt_count': 0
+        }
+        
         for attempt in range(max_retries):
+            result_info['attempt_count'] = attempt + 1
             try:
-                print(f"🔍 正在爬取: {address} (尝试 {attempt+1}/{max_retries})")
-                
                 url = f'https://www.google.com/maps/place/{address}'
                 driver.get(url)
                 
                 if not self._wait_for_page_load(driver, self.config['timeout']):
-                    print("  ⚠️ 页面加载超时")
+                    result_info['reason'] = '页面加载超时'
                     if attempt < max_retries - 1:
                         time.sleep(2)
                         continue
-                    return None
+                    break
                 
-                # 使用修复版函数获取地点类型
+                # 1. 首先判断是否为建筑物
                 place_type = get_building_type_robust(driver)
+                result_info['place_type'] = place_type or '未知'
                 
-                # 使用新的判断逻辑
                 if not is_building(place_type):
-                    print(f"  ⏭️ 非建筑物类型: '{place_type}'，跳过")
-                    return None
-                
-                print(f"  ✅ 确认为建筑物: '{place_type}'")
+                    result_info['status'] = 'skipped'
+                    result_info['reason'] = f'非建筑物({place_type})'
+                    break
                 
                 # 获取建筑物名称
                 place_name = safe_get_building_name(driver)
-                print(f"  🏢 建筑名: {place_name}")
+                result_info['place_name'] = place_name
                 
-                # 检查更多按钮
+                # 2. 检查是否有展开按钮
                 try:
                     more_button = WebDriverWait(driver, 3).until(
                         EC.presence_of_element_located((By.CLASS_NAME, 'M77dve'))
                     )
-                    print("  📋 找到更多按钮，正在处理...")
+                    result_info['has_expand_button'] = True
                     click_on_more_button(driver)
+                    
+                    # 获取展开前的POI数量用于验证
+                    initial_poi_count = get_poi_count_enhanced(driver)
+                    
+                    # 执行强化滚动
                     scroll_poi_section(driver)
+                    
+                    # 快速验证滚动效果
+                    time.sleep(1)  # 减少等待时间
+                    df_first = safe_get_all_poi_info(driver)
+                    
+                    # 如果初始显示很多POI但实际提取很少，快速再次尝试
+                    if initial_poi_count > 50 and len(df_first) < initial_poi_count * 0.4:  # 提高阈值
+                        # 快速再次滚动
+                        scroll_poi_section(driver)
+                        time.sleep(1.5)  # 减少等待
+                        
                 except TimeoutException:
-                    print("  📋 没有更多按钮")
+                    result_info['has_expand_button'] = False
                 
-                # 获取POI信息
+                # 3. 提取POI数据
                 df = safe_get_all_poi_info(driver)
                 if df.empty:
-                    print("  ❌ 未找到POI信息")
-                    return None
+                    result_info['reason'] = '未找到POI'
+                    break
                 
                 # 获取坐标
                 lat, lng = safe_get_coords(driver.current_url)
-                print(f"  🌍 坐标: ({lat}, {lng})")
                 
                 # 添加额外信息
                 df['blt_name'] = place_name
@@ -267,18 +292,42 @@ class FinalPOICrawler:
                 df['crawl_time'] = pd.Timestamp.now()
                 df['source_address'] = address
                 
-                print(f"  ✅ 成功获取 {len(df)} 个POI")
+                result_info['poi_count'] = len(df)
+                result_info['status'] = 'success'
+                
+                # 输出处理结果
+                self._print_address_result(result_info)
                 return df
                 
             except Exception as e:
-                print(f"  ❌ 爬取失败: {e}")
+                result_info['reason'] = str(e)[:50]
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                     continue
                 else:
-                    return None
+                    break
         
+        # 输出处理结果
+        self._print_address_result(result_info)
         return None
+    
+    def _print_address_result(self, result_info):
+        """输出单个地址的处理结果"""
+        address = result_info['address']
+        status = result_info['status']
+        
+        if status == 'success':
+            expand_status = "展开后提取" if result_info['has_expand_button'] else "直接提取"
+            # 简化地址显示（只显示前30个字符）
+            short_address = address[:30] + "..." if len(address) > 30 else address
+            print(f"✅ [{short_address}] 建筑物({result_info['place_type']}) - {expand_status} - POI数量: {result_info['poi_count']}")
+        elif status == 'skipped':
+            short_address = address[:30] + "..." if len(address) > 30 else address
+            print(f"⏭️ [{short_address}] 跳过 - {result_info['reason']}")
+        else:
+            short_address = address[:30] + "..." if len(address) > 30 else address
+            attempt_info = f" (尝试{result_info['attempt_count']}次)" if result_info['attempt_count'] > 1 else ""
+            print(f"❌ [{short_address}] 失败{attempt_info} - {result_info['reason']}")
     
     def _process_address(self, address):
         driver = self.driver_pool.get_driver()

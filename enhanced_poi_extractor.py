@@ -253,15 +253,11 @@ class EnhancedPOIExtractor:
             'lI9IFe'  # 新的可能class
         ]
         
-        print('🔍 正在提取POI信息...')
-        
         for container_class in poi_container_classes:
             try:
                 poi_elements = driver.find_elements(By.CLASS_NAME, container_class.replace(' ', '.'))
                 
                 if poi_elements:
-                    print(f"  ✅ 找到 {len(poi_elements)} 个POI元素 (使用class: {container_class})")
-                    
                     for poi_element in poi_elements:
                         try:
                             soup = BeautifulSoup(poi_element.get_attribute('innerHTML'), "html.parser")
@@ -282,10 +278,8 @@ class EnhancedPOIExtractor:
         
         if poi_list:
             df = pd.DataFrame(poi_list)
-            print(f"  ✅ 成功提取 {len(df)} 个POI信息")
             return df
         else:
-            print("  ❌ 未找到POI信息")
             # 返回空DataFrame但包含所有列
             return pd.DataFrame(columns=[
                 'name', 'rating', 'review_count', 'category', 'address', 

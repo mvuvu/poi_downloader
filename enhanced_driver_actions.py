@@ -39,14 +39,12 @@ def click_on_more_button(driver, timeout=5):
                     )
                 
                 element.click()
-                print(f"  ✅ 成功点击更多按钮 (使用选择器: {selector})")
                 time.sleep(1)  # 等待展开
                 return True
                 
             except Exception:
                 continue
         
-        print("  ⚠️ 未找到更多按钮")
         return False
         
     except Exception as e:
@@ -79,22 +77,20 @@ def get_poi_count_enhanced(driver):
                             total += int(text)
                     
                     if total > 0:
-                        print(f"  📊 找到 {total} 个POI")
                         return total
                         
             except Exception:
                 continue
         
         # 如果无法获取准确数量，返回估算值
-        print("  📊 无法获取准确POI数量，使用估算值")
         return 10  # 默认估算值
         
     except Exception as e:
         logger.warning(f"获取POI数量失败: {e}")
         return 10
 
-def scroll_poi_section_enhanced(driver, max_scrolls=20):
-    """滚动POI区域 - 增强版"""
+def scroll_poi_section_enhanced(driver, max_scrolls=100):
+    """滚动POI区域 - 强化版，确保完全加载"""
     try:
         # 多种POI区域选择器
         poi_section_selectors = [
@@ -128,60 +124,99 @@ def scroll_poi_section_enhanced(driver, max_scrolls=20):
                     )
                 
                 if poi_section:
-                    print(f"  ✅ 找到POI区域 (使用选择器: {selector})")
                     break
                     
             except Exception:
                 continue
         
         if not poi_section:
-            print("  ❌ 未找到POI区域")
             return False
         
-        # 智能计算滚动次数
-        poi_count = get_poi_count_enhanced(driver)
-        scroll_times = min(math.ceil(poi_count / 10) + 1, max_scrolls)
+        # 获取初始POI数量用于参考
+        initial_poi_count = get_poi_count_enhanced(driver)
         
-        # 限制最大滚动次数以避免过度滚动
-        if scroll_times > 50:
-            scroll_times = 50
-        
-        print(f'🔄 开始滚动POI区域 (预计滚动 {scroll_times} 次)...')
-        
-        # 执行滚动
+        # 执行智能滚动 - 基于实际内容变化
         last_height = driver.execute_script("return arguments[0].scrollHeight", poi_section)
+        stable_count = 0  # 连续稳定计数
         scroll_count = 0
-        no_change_count = 0
+        max_stable_attempts = 8  # 增加稳定尝试次数
         
-        for i in range(scroll_times):
+        # 第一阶段：快速滚动加载大部分内容
+        for i in range(max_scrolls):
             try:
                 # 滚动到底部
                 driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", poi_section)
-                time.sleep(1.5)  # 减少等待时间
                 
-                # 检查是否有新内容加载
+                # 快速等待时间
+                if scroll_count < 20:
+                    time.sleep(0.8)  # 前期很快
+                elif scroll_count < 50:
+                    time.sleep(1.2)  # 中期快速
+                else:
+                    time.sleep(1.8)  # 后期稍慢
+                
+                # 检查内容变化
                 new_height = driver.execute_script("return arguments[0].scrollHeight", poi_section)
                 
                 if new_height == last_height:
-                    no_change_count += 1
-                    if no_change_count >= 3:  # 连续3次没有变化就停止
-                        print(f"  ⏹️ 内容已全部加载完成 (滚动 {scroll_count + 1} 次)")
-                        break
+                    stable_count += 1
+                    # 减少稳定次数判断
+                    if stable_count >= 5:  # 从8次减少到5次
+                        # 快速最终确认
+                        for final_check in range(2):  # 从3次减少到2次
+                            driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", poi_section)
+                            time.sleep(1.5)  # 从4秒减少到1.5秒
+                            
+                            final_height = driver.execute_script("return arguments[0].scrollHeight", poi_section)
+                            if final_height > new_height:
+                                # 还有新内容，重置计数继续
+                                stable_count = 0
+                                last_height = final_height
+                                break
+                        else:
+                            # 真正到底了
+                            break
                 else:
-                    no_change_count = 0
+                    stable_count = 0
                     last_height = new_height
                 
                 scroll_count += 1
                 
-                # 每10次滚动显示进度
-                if (i + 1) % 10 == 0:
-                    print(f"  🔄 已滚动 {i + 1}/{scroll_times} 次")
+                # 每20次滚动检查是否有"显示更多"按钮
+                if scroll_count % 20 == 0:
+                    try:
+                        show_more_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), '显示更多') or contains(text(), 'Show more')]")
+                        for btn in show_more_buttons:
+                            if btn.is_displayed():
+                                btn.click()
+                                time.sleep(2)
+                                break
+                    except:
+                        pass
                     
             except Exception as e:
                 logger.warning(f"滚动失败: {e}")
                 break
         
-        print(f"  ✅ POI区域滚动完成 (实际滚动 {scroll_count} 次)")
+        # 第二阶段：验证加载完整性
+        final_poi_count = get_poi_count_enhanced(driver)
+        
+        # 如果实际加载的POI数量明显少于预期，快速补充滚动
+        if initial_poi_count > 30 and final_poi_count < initial_poi_count * 0.6:  # 提高阈值
+            # 快速补充滚动
+            for extra_scroll in range(10):  # 减少补充次数
+                driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", poi_section)
+                time.sleep(1.5)  # 减少等待时间
+                
+                newer_height = driver.execute_script("return arguments[0].scrollHeight", poi_section)
+                if newer_height > last_height:
+                    last_height = newer_height
+                    stable_count = 0
+                else:
+                    stable_count += 1
+                    if stable_count >= 3:  # 更快停止
+                        break
+        
         return True
         
     except Exception as e:
