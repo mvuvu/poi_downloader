@@ -17,7 +17,7 @@ import sys
 
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, get_poi_comment_count
 from driver_action import click_on_more_button, scroll_poi_section
-from utilities import save2csv
+# 移除过期的utilities导入
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -241,8 +241,59 @@ class ParallelPOICrawler:
                   f"耗时 {batch_end_time - batch_start_time:.2f}s, "
                   f"总进度 {end_idx}/{total_addresses}\n")
         
-        print(f"\n爬取完成！总成功: {total_success}, 总失败: {total_errors}")
+        print(f"\n{district_name} 爬取完成！总成功: {total_success}, 总失败: {total_errors}")
         print(f"数据已保存到: {self.output_file}")
+        return total_success, total_errors
+
+    def crawl_all_districts(self, input_dir="data/input"):
+        """批量处理input目录中的所有区文件"""
+        input_path = Path(input_dir)
+        csv_files = list(input_path.glob("*.csv"))
+        
+        if not csv_files:
+            print(f"在 {input_dir} 目录中没有找到CSV文件")
+            return
+        
+        print(f"发现 {len(csv_files)} 个区文件，开始批量处理...\n")
+        
+        all_success = 0
+        all_errors = 0
+        processed_districts = []
+        
+        start_time = time.time()
+        
+        for i, csv_file in enumerate(csv_files):
+            district_name = self._extract_district_name(csv_file)
+            print(f"{'='*60}")
+            print(f"处理第 {i+1}/{len(csv_files)} 个区: {district_name}")
+            print(f"{'='*60}")
+            
+            try:
+                success, errors = self.crawl_from_csv(csv_file)
+                all_success += success
+                all_errors += errors
+                processed_districts.append(f"{district_name}: 成功{success}, 失败{errors}")
+                
+            except Exception as e:
+                print(f"处理 {district_name} 时发生错误: {e}")
+                all_errors += 1
+                processed_districts.append(f"{district_name}: 处理失败")
+            
+            print(f"\n{district_name} 处理完成\n")
+        
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        print(f"{'='*60}")
+        print(f"全部区域处理完成！")
+        print(f"{'='*60}")
+        print(f"总耗时: {total_time/60:.1f} 分钟")
+        print(f"总成功: {all_success}")
+        print(f"总失败: {all_errors}")
+        print(f"处理了 {len(processed_districts)} 个区:")
+        
+        for district_summary in processed_districts:
+            print(f"  {district_summary}")
 
     def _merge_results(self):
         # 不再需要合并，因为数据实时写入单个文件
@@ -251,17 +302,28 @@ class ParallelPOICrawler:
 
 def main():
     if len(sys.argv) < 2:
-        print("用法: python parallel_poi_crawler.py <输入CSV文件>")
-        print("示例: python parallel_poi_crawler.py data/input/test_addresses.csv")
-        return
-    
-    input_file = sys.argv[1]
-    if not os.path.exists(input_file):
-        print(f"文件不存在: {input_file}")
+        print("用法:")
+        print("  单个文件: python parallel_poi_crawler.py <输入CSV文件>")
+        print("  批量处理: python parallel_poi_crawler.py --all")
+        print("")
+        print("示例:")
+        print("  python parallel_poi_crawler.py data/input/千代田区_complete.csv")
+        print("  python parallel_poi_crawler.py --all")
         return
     
     crawler = ParallelPOICrawler(max_workers=4, batch_size=20)
-    crawler.crawl_from_csv(input_file)
+    
+    if sys.argv[1] == "--all":
+        # 批量处理所有区文件
+        crawler.crawl_all_districts()
+    else:
+        # 处理单个文件
+        input_file = sys.argv[1]
+        if not os.path.exists(input_file):
+            print(f"文件不存在: {input_file}")
+            return
+        
+        crawler.crawl_from_csv(input_file)
 
 
 if __name__ == "__main__":

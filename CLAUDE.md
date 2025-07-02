@@ -4,26 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a POI (Point of Interest) crawler system for Google Maps, designed to extract building information and associated businesses/POIs from Japanese addresses. The system supports both sequential and parallel processing modes.
+This is a high-performance POI (Point of Interest) crawler system for Google Maps, designed to extract building information and associated businesses/POIs from Japanese addresses. The system uses multi-process parallel processing for optimal performance.
 
 ## Core Architecture
 
 ### Module Structure
+- **`parallel_poi_crawler.py`** - Main parallel crawler with real-time data output
 - **`info_tool.py`** - Core data extraction functions that parse Google Maps pages using Selenium and BeautifulSoup
 - **`driver_action.py`** - Selenium interaction helpers for clicking buttons, scrolling, and expanding content
-- **`utilities.py`** - File I/O utilities for CSV operations and data management
-- **`parallel_poi_crawler.py`** - Multi-process parallel crawler implementation (recommended)
-- **`start.ipynb`** - Original sequential crawler (legacy, single-threaded)
 
 ### Data Flow
 ```
-CSV Input → Address Processing → Google Maps Navigation → 
-Page Interaction → POI Data Extraction → CSV Output
+CSV Input → District Name Extraction → Parallel Address Processing → 
+Google Maps Navigation → Page Interaction → POI Data Extraction → 
+Real-time CSV Append (District Named File)
 ```
 
 ### Input/Output Structure
 - **Input**: CSV files in `data/input/` with columns: `District,Latitude,Longitude,Address`
-- **Output**: CSV files in `data/output/` with POI details: `name,rating,class,add,blt_name,lat,lng,comment_count`
+- **Output**: Single CSV file per district: `data/output/[区名]_poi_data_[timestamp].csv`
+- **Fields**: `name,rating,class,add,comment_count,blt_name,lat,lng`
 
 ## Running the Crawler
 
@@ -43,8 +43,9 @@ python parallel_poi_crawler.py data/input/your_addresses.csv
 - Uses headless Chrome with optimized options for performance
 
 ### Output Format
-- Silent crawling with per-address summary: `Address | 建筑物: Yes/No | 滑动: Yes/No | POI: count | 评论: count`
-- Final CSV includes `comment_count` field
+- Silent crawling with per-address summary: `Address | 建筑物: Yes/No | 滑动: Yes/No | POI: count`
+- Real-time data append to district-named CSV file
+- Each POI has individual `comment_count` extracted from rating format like `4.2(144)`
 
 ## Key Technical Details
 
@@ -78,15 +79,23 @@ Required Python packages (create requirements.txt):
 
 ## Development Notes
 
+### Recent Improvements
+- Real-time data saving prevents data loss on interruption
+- District-named files for better organization
+- Complete silence during crawling (no debug output)
+- Individual comment count extraction per POI
+- Removed legacy utilities and notebook files
+
 ### Code Quality Issues
 - Mixed languages in comments (Chinese/English)
 - Hardcoded XPaths that may break with UI changes
-- Legacy code in notebooks needs cleanup
+- Building type detection may need adjustment for current Google Maps UI
 
 ### Performance Considerations
 - Parallel processing provides 4-8x speed improvement over sequential
-- Batch processing prevents memory issues with large datasets
+- Real-time append prevents memory issues with large datasets
+- Complete Chrome silence eliminates noise
 - Chrome driver management is critical for stability
 
 ### Testing
-Currently no automated tests exist. Manual testing with small address samples recommended before large runs.
+Currently no automated tests exist. Building type detection may need debugging if all addresses show "建筑物: 否".
