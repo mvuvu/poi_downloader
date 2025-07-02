@@ -4,6 +4,15 @@
 最终修复版POI爬虫 - 解决所有已知问题
 """
 
+import os
+import warnings
+import sys
+
+# 屏蔽所有警告信息
+warnings.filterwarnings('ignore')
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
 import pandas as pd
 import time
 import logging
@@ -18,7 +27,6 @@ from selenium.common.exceptions import TimeoutException, WebDriverException
 import json
 from pathlib import Path
 import queue
-import sys
 
 # 使用增强版的工具函数
 try:
@@ -27,14 +35,16 @@ try:
         safe_get_building_name, safe_get_coords, safe_get_all_poi_info
     )
     from enhanced_driver_actions import click_on_more_button, scroll_poi_section
-    from file_selector import select_files_command_line, FileSelector
+    from simple_file_selector import get_simple_file_config
     print("✅ 增强版工具函数导入成功")
 except ImportError as e:
     print(f"❌ 工具函数导入失败: {e}")
     sys.exit(1)
 
-# 简化日志
-logging.basicConfig(level=logging.ERROR)
+# 完全禁用日志
+logging.basicConfig(level=logging.CRITICAL)
+logging.getLogger('selenium').setLevel(logging.CRITICAL)
+logging.getLogger('urllib3').setLevel(logging.CRITICAL)
 
 class RobustWebDriverPool:
     """高性能WebDriver池 - 优化版"""
@@ -80,6 +90,13 @@ class RobustWebDriverPool:
         options.add_argument('--aggressive-cache-discard')
         options.add_argument('--disable-background-downloads')
         
+        # 屏蔽警告和错误信息
+        options.add_argument('--log-level=3')
+        options.add_argument('--silent')
+        options.add_argument('--disable-dev-tools')
+        options.add_argument('--disable-features=VizDisplayCompositor')
+        options.add_argument('--disable-ipc-flooding-protection')
+        
         # 强制无头模式以提高性能
         if self.headless:
             options.add_argument('--headless=new')  # 使用新版无头模式
@@ -107,11 +124,17 @@ class RobustWebDriverPool:
         options.add_argument('--page-load-strategy=eager')  # 不等待所有资源加载完成
         
         try:
-            # 尝试使用系统Chrome
-            driver = webdriver.Chrome(options=options)
+            # 尝试使用系统Chrome (屏蔽Service日志)
+            service = Service()
+            service.log_path = os.devnull
+            driver = webdriver.Chrome(service=service, options=options)
         except:
+            # 屏蔽webdriver manager的日志
+            os.environ['WDM_LOG_LEVEL'] = '0'
+            os.environ['WDM_PRINT_FIRST_LINE'] = 'False'
             from webdriver_manager.chrome import ChromeDriverManager
             service = Service(ChromeDriverManager().install())
+            service.log_path = os.devnull
             driver = webdriver.Chrome(service=service, options=options)
         
         # 设置页面加载超时
@@ -394,53 +417,143 @@ class FinalPOICrawler:
     def close(self):
         self.driver_pool.close_all()
 
-def main():
-    """主函数 - 支持文件选择"""
-    print("🎯 增强版POI爬虫")
-    print("=" * 60)
+def show_startup_menu():
+    """显示启动菜单"""
+    print("🎯 POI爬虫启动器")
+    print("=" * 40)
+    print("📋 可用模式:")
+    print("1. 🚀 自动爬取 (自动选择最大CSV文件)")
+    print("2. 🧪 测试模式 (前5个地址)")
+    print("3. 🖥️ 显示Chrome窗口模式")
+    print("4. 📄 帮助信息")
+    print("5. 🔧 高级参数模式")
     
+    print("\n💡 快速使用:")
+    print("  python final_crawler.py        # 显示此菜单")
+    print("  python final_crawler.py --test # 直接测试模式")
+    print("  python final_crawler.py --help # 查看所有参数")
+
+def show_help_info():
+    """显示详细帮助信息"""
+    print("\n📄 详细使用说明:")
+    print("=" * 50)
+    print("🔥 自动文件选择:")
+    print("  程序会自动扫描 data/input/ 目录")
+    print("  选择行数最多的有效CSV文件")
+    print("  生成带时间戳的输出文件")
+    print()
+    print("📋 命令行参数:")
+    print("  --test          测试模式(前5个地址)")
+    print("  --no-headless   显示Chrome窗口")
+    print("  --workers N     设置并发线程数")
+    print("  --input FILE    指定输入文件")
+    print("  --output FILE   指定输出文件")
+    print()
+    print("📂 文件要求:")
+    print("  - CSV格式")
+    print("  - 必须包含 'Address' 列")
+    print("  - 放在 data/input/ 目录下")
+    print()
+    print("🎯 示例命令:")
+    print("  python final_crawler.py                    # 显示菜单")
+    print("  python final_crawler.py --test             # 测试前5个地址")
+    print("  python final_crawler.py --workers 2        # 使用2个线程")
+    print("  python final_crawler.py --no-headless      # 显示Chrome")
+
+def main():
+    """主函数 - 统一启动入口"""
     # 添加命令行参数支持
     import argparse
-    parser = argparse.ArgumentParser(description='POI爬虫工具')
+    parser = argparse.ArgumentParser(description='POI爬虫工具', add_help=False)
+    parser.add_argument('mode', nargs='?', help='启动模式 (1-5)')
     parser.add_argument('--input', '-i', help='输入CSV文件路径')
-    parser.add_argument('--output', '-o', help='输出CSV文件路径')
+    parser.add_argument('--output', '-o', help='输出CSV文件路径') 
     parser.add_argument('--workers', '-w', type=int, default=4, help='并发线程数 (默认: 4)')
     parser.add_argument('--headless', action='store_true', help='无头模式运行')
     parser.add_argument('--no-headless', action='store_true', help='显示Chrome窗口')
-    parser.add_argument('--interactive', action='store_true', help='交互式文件选择')
+    parser.add_argument('--test', action='store_true', help='测试模式 (处理前5个地址)')
+    parser.add_argument('--help', '-h', action='store_true', help='显示帮助信息')
     args = parser.parse_args()
     
-    # 文件选择逻辑
-    input_file = None
-    output_file = None
+    # 处理帮助信息
+    if args.help:
+        parser.print_help()
+        show_help_info()
+        return
     
-    if args.interactive or (not args.input and not args.output):
-        print("📂 启动交互式文件选择...")
-        input_file, output_file = select_files_command_line()
+    # 处理直接命令行参数
+    if args.test or args.input or args.no_headless:
+        run_crawler_direct(args)
+        return
+    
+    # 处理菜单模式
+    if args.mode:
+        run_menu_mode(args.mode)
+        return
+    
+    # 显示启动菜单
+    show_startup_menu()
+    try:
+        choice = input("\n请选择模式 (1-5): ").strip()
+        if choice:
+            run_menu_mode(choice)
+    except (KeyboardInterrupt, EOFError):
+        print("\n❌ 已取消")
+
+def run_menu_mode(mode):
+    """根据菜单选择运行"""
+    if mode == '1':
+        # 自动爬取模式
+        print("\n🚀 启动自动爬取模式...")
+        run_crawler_with_config(test_mode=False, headless=True)
         
-        if not input_file:
-            print("❌ 未选择输入文件，程序退出")
-            return
-            
+    elif mode == '2':
+        # 测试模式
+        print("\n🧪 启动测试模式...")
+        run_crawler_with_config(test_mode=True, headless=True)
+        
+    elif mode == '3':
+        # 显示Chrome窗口模式
+        print("\n🖥️ 启动显示Chrome窗口模式...")
+        run_crawler_with_config(test_mode=False, headless=False)
+        
+    elif mode == '4':
+        # 帮助信息
+        show_help_info()
+        
+    elif mode == '5':
+        # 高级参数模式
+        print("\n🔧 高级参数模式:")
+        print("使用以下命令行参数:")
+        print("  python final_crawler.py --input your_file.csv --workers 2")
+        print("  python final_crawler.py --test --no-headless")
+        
     else:
+        print("❌ 无效选择，请使用 1-5")
+
+def run_crawler_direct(args):
+    """直接运行爬虫（命令行参数模式）"""
+    print("🎯 增强版POI爬虫")
+    print("=" * 60)
+    
+    # 简单文件选择逻辑
+    if args.input and args.output:
         input_file = args.input
         output_file = args.output
-    
-    # 如果仍然没有输入文件，使用默认文件
-    if not input_file:
-        default_input = 'data/input/千代田区_complete_1751433587.csv'
-        if Path(default_input).exists():
-            input_file = default_input
-            print(f"📄 使用默认输入文件: {input_file}")
-        else:
-            print("❌ 没有指定输入文件且默认文件不存在")
+        print(f"📄 使用指定文件:")
+        print(f"  📥 输入: {input_file}")
+        print(f"  📤 输出: {output_file}")
+    else:
+        print("📂 自动选择文件...")
+        file_config = get_simple_file_config(suffix="test" if args.test else "poi_enhanced")
+        
+        if not file_config['has_input']:
+            print("❌ 未找到有效的输入文件")
+            print("💡 请将CSV文件放入 data/input/ 目录")
             return
-    
-    # 生成输出文件名
-    if not output_file:
-        selector = FileSelector()
-        output_file = selector.generate_output_filename(input_file, "poi_enhanced")
-        print(f"📁 自动生成输出文件: {output_file}")
+        
+        input_file = file_config['input_file']
+        output_file = file_config['output_file']
     
     # 确定是否使用无头模式
     headless = True  # 默认无头模式
@@ -449,10 +562,39 @@ def main():
     elif args.headless:
         headless = True
     
-    # 高性能配置
+    # 运行爬虫
+    run_crawler_core(input_file, output_file, args.workers, headless, args.test)
+
+def run_crawler_with_config(test_mode=False, headless=True, workers=4):
+    """使用预设配置运行爬虫"""
+    print("📂 自动选择文件...")
+    file_config = get_simple_file_config(suffix="test" if test_mode else "poi_enhanced")
+    
+    if not file_config['has_input']:
+        print("❌ 未找到有效的输入文件")
+        print("💡 请将CSV文件放入 data/input/ 目录")
+        return
+    
+    # 测试模式清理检查点
+    if test_mode:
+        checkpoint_file = Path('checkpoint.json')
+        if checkpoint_file.exists():
+            checkpoint_file.unlink()
+            print("🧹 已清理检查点文件")
+    
+    run_crawler_core(
+        file_config['input_file'], 
+        file_config['output_file'], 
+        workers, 
+        headless, 
+        test_mode
+    )
+
+def run_crawler_core(input_file, output_file, workers, headless, test_mode):
+    """爬虫核心运行逻辑"""
     config = {
-        'max_workers': args.workers,
-        'driver_pool_size': args.workers,
+        'max_workers': workers,
+        'driver_pool_size': workers,
         'batch_size': 15,
         'timeout': 12,
         'retry_times': 2,
@@ -482,7 +624,13 @@ def main():
             print("⚠️ 未找到'Address'列，尝试使用第一列")
             addresses = df_input.iloc[:, 0].dropna().tolist()
         
-        print(f"  有效地址: {len(addresses):,} 个")
+        # 测试模式处理
+        if test_mode:
+            test_count = min(5, len(addresses))
+            addresses = addresses[:test_count]
+            print(f"🧪 测试模式: 只处理前 {test_count} 个地址")
+        
+        print(f"  处理地址数: {len(addresses):,} 个")
         
         if len(addresses) == 0:
             print("❌ 没有有效地址数据")
@@ -492,13 +640,16 @@ def main():
         estimated_time = len(addresses) * 2.5 / config['max_workers'] / 60
         print(f"  ⏱️ 预计耗时: {estimated_time:.1f} 分钟")
         
-        # 确认执行
-        if len(addresses) > 100:
+        # 确认执行 (测试模式跳过确认)
+        if len(addresses) > 100 and not test_mode:
             print(f"\n⚠️ 将要处理 {len(addresses):,} 个地址，这可能需要较长时间")
-            confirm = input("确认继续？(y/n): ").lower()
-            if confirm != 'y':
-                print("❌ 已取消执行")
-                return
+            try:
+                confirm = input("确认继续？(y/n): ").lower()
+                if confirm != 'y':
+                    print("❌ 已取消执行")
+                    return
+            except EOFError:
+                print("🤖 非交互环境，自动继续执行")
         
         print(f"\n🚀 开始爬取...")
         start_time = time.time()
@@ -525,21 +676,6 @@ def main():
         print(f"❌ 输入文件不存在: {config['input_file']}")
     except Exception as e:
         print(f"❌ 运行失败: {e}")
-
-def run_with_file_selection():
-    """仅文件选择模式运行"""
-    print("📂 POI爬虫 - 文件选择模式")
-    input_file, output_file = select_files_command_line()
-    
-    if input_file and output_file:
-        # 直接运行爬虫
-        import subprocess
-        import sys
-        
-        cmd = [sys.executable, __file__, '--input', input_file, '--output', output_file]
-        subprocess.run(cmd)
-    else:
-        print("❌ 文件选择失败或被取消")
 
 if __name__ == "__main__":
     main()
