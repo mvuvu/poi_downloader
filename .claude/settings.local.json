@@ -17,7 +17,14 @@
       "Bash(cat:*)",
       "Bash(mkdir:*)",
       "Bash(tree:*)",
-      "Bash(^C)"
+      "Bash(^C)",
+      "Bash(for:*)",
+      "Bash(do)",
+      "Bash(sed:*)",
+      "Bash(done)",
+      "Bash(if [ -f \"$file\" ])",
+      "Bash(then)",
+      "Bash(fi)"
     ],
     "deny": []
   }
