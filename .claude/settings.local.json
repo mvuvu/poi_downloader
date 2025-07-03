@@ -24,7 +24,8 @@
       "Bash(done)",
       "Bash(if [ -f \"$file\" ])",
       "Bash(then)",
-      "Bash(fi)"
+      "Bash(fi)",
+      "Bash(awk:*)"
     ],
     "deny": []
   }

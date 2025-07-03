@@ -202,7 +202,7 @@ class ParallelPOICrawler:
                     else:
                         batch_results.append({
                             'success': False,
-                            'error': '未找到POI数据',
+                            'error': '未找到POI数据或不是建筑物',
                             'address': address,
                             'worker_id': worker_id,
                             'index': idx
@@ -314,6 +314,53 @@ class ParallelPOICrawler:
                 success_count += sum(1 for r in batch_results if r['success'])
                 error_count += sum(1 for r in batch_results if not r['success'])
         
+        # 检查是否整个批次都失败了（都不是建筑物）
+        if success_count == 0 and error_count == len(addresses_batch):
+            # 检查所有错误是否都是"不是建筑"导致的
+            not_building_count = sum(1 for r in all_results 
+                                   if not r['success'] and 
+                                   ('不是建筑' in str(r.get('error', '')) or 
+                                    '未找到POI数据' in str(r.get('error', ''))))
+            
+            if not_building_count == len(addresses_batch):
+                # 获取区名
+                district_name = getattr(self, 'current_district_name', '当前区域')
+                
+                # 输出醒目的警告信息
+                print(f"\n{'='*70}")
+                print(f"⚠️  警告: 批次异常检测！")
+                print(f"{'='*70}")
+                print(f"区域: {district_name}")
+                print(f"批次: {batch_id + 1}")
+                print(f"地址数量: {len(addresses_batch)}")
+                print(f"状态: 所有地址都不是建筑物（100%失败）")
+                print(f"\n可能的原因:")
+                print(f"  1. 地址格式不正确")
+                print(f"  2. 地址数据已过期或无效")
+                print(f"  3. 该区域可能主要是非建筑物地址（如公园、道路等）")
+                print(f"  4. Google Maps API响应异常")
+                print(f"\n建议操作:")
+                print(f"  1. 检查输入CSV文件中的地址格式")
+                print(f"  2. 验证几个样本地址是否能在Google Maps上正确定位")
+                print(f"  3. 如果问题持续，考虑跳过该批次或更新地址数据")
+                print(f"{'='*70}\n")
+                
+                # 记录详细信息到日志文件
+                log_file = f"non_building_warnings/{district_name}_batch_{batch_id + 1}_warning.log"
+                os.makedirs("non_building_warnings", exist_ok=True)
+                
+                with open(log_file, 'w', encoding='utf-8') as f:
+                    f.write(f"警告日志 - {district_name} 批次 {batch_id + 1}\n")
+                    f.write(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"批次大小: {len(addresses_batch)}\n")
+                    f.write(f"失败率: 100%\n")
+                    f.write(f"\n失败的地址列表:\n")
+                    f.write("-" * 50 + "\n")
+                    for i, r in enumerate(all_results, 1):
+                        f.write(f"{i}. {r['address']}\n")
+                
+                print(f"详细信息已保存到: {log_file}\n")
+        
         return success_count, error_count, success_count
 
     def _append_to_output_file(self, data):
@@ -353,6 +400,7 @@ class ParallelPOICrawler:
         
         # 设置输出文件路径（以区命名）
         district_name = self._extract_district_name(input_file)
+        self.current_district_name = district_name  # 保存当前区域名称
         self.progress_file = self.progress_dir / f"{district_name}_progress.json"
         
         # 检查是否有未完成的进度
