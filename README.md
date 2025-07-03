@@ -1,42 +1,68 @@
 # POI Crawler
 
-从Google Maps并行爬取POI数据，支持断点续传和智能地址转换。
+从Google Maps并行爬取POI数据，支持断点续传和智能地址转换的高效数据采集工具。
 
 ## 特性
 
-- 多进程并行爬取
-- 断点续传
-- 智能地址转换（日文→英文）
-- 静默运行
+- **多进程并行爬取** - 支持多核CPU充分利用，提高爬取效率
+- **断点续传** - 进度自动保存，支持中断后继续爬取
+- **智能地址转换** - 日文地址自动转换为标准英文格式
+- **静默运行** - 无头浏览器模式，后台稳定运行
+- **批量处理** - 支持批量处理多个区域文件
+- **进度监控** - 实时查看爬取进度和状态
+
+## 系统要求
+
+- Python 3.8+
+- Chrome浏览器
+- 充足的内存（建议8GB+）
+- 稳定的网络连接
 
 ## 安装
 
 ```bash
+# 克隆项目
+git clone <repository-url>
+cd poi_crawler
+
+# 安装依赖
 pip install -r requirements.txt
 ```
 
-## 使用
+## 快速开始
+
+```bash
+# 1. 准备输入数据（CSV文件，包含坐标和地址信息）
+# 2. 放置文件到 data/input/ 目录
+# 3. 开始爬取
+python parallel_poi_crawler.py --all
+```
+
+## 详细使用说明
 
 ### POI数据爬取
 
 ```bash
-# 处理所有区域
+# 处理所有区域文件
 python parallel_poi_crawler.py --all
 
-# 处理单个文件
+# 处理指定文件
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
 
-# 查看进度
+# 查看爬取进度和状态
 python parallel_poi_crawler.py --status
+
+# 使用自定义工作进程数
+python parallel_poi_crawler.py --all --workers 4
 ```
 
 ### 地址转换
 
 ```bash
-# 转换单个文件
+# 转换单个文件（直接覆盖原文件）
 python address_converter.py data/oring_add/千代田区.csv
 
-# 批量转换所有文件（直接覆盖原文件）
+# 批量转换所有文件
 python address_converter.py --all
 
 # 强制重新转换所有文件
@@ -45,40 +71,105 @@ python address_converter.py --regenerate
 
 ## 数据格式
 
-### 输入CSV格式
-需包含：District, Latitude, Longitude, Address
+### 输入CSV格式要求
+| 列名 | 说明 | 示例 |
+|------|------|------|
+| District | 区域名称 | 千代田区 |
+| Latitude | 纬度坐标 | 35.6895 |
+| Longitude | 经度坐标 | 139.6917 |
+| Address | 日文地址 | 東京都千代田区神田駿河台3丁目1-1 |
 
-### POI输出格式
-包含：name, rating, class, add, comment_count, blt_name, lat, lng
+### POI输出数据字段
+| 字段 | 说明 | 示例 |
+|------|------|------|
+| name | POI名称 | スターバックス |
+| rating | 评分 | 4.2 |
+| class | 分类 | コーヒーショップ |
+| add | 地址 | 東京都千代田区... |
+| comment_count | 评论数 | 150 |
+| blt_name | 建筑物名称 | 神田ビル |
+| lat | 纬度 | 35.6895 |
+| lng | 经度 | 139.6917 |
 
-### 地址转换
-- 输入：日文地址（如：東京都千代田区神田駿河台3丁目1-1）
-- 输出：英文格式（如：〒101-0062,+Tokyo,+Chiyoda+City,+Kandasurugadai,+3-chōme−1-1）
-- 自动添加ConvertedAddress列到原文件
+### 地址转换格式
+- **输入**：東京都千代田区神田駿河台3丁目1-1
+- **输出**：〒101-0062,+Tokyo,+Chiyoda+City,+Kandasurugadai,+3-chōme−1-1
+- 自动添加 `ConvertedAddress` 列到原文件
 
 ## 项目结构
 
 ```
 poi_crawler/
-├── parallel_poi_crawler.py  # 主程序
-├── address_converter.py     # 地址转换工具
-├── info_tool.py            # 数据提取
-├── driver_action.py        # 浏览器操作
-├── requirements.txt        # 依赖
-└── data/
-    ├── input/             # 爬取输入文件
-    ├── oring_add/         # 地址转换输入文件
-    ├── output/            # 输出文件
-    ├── progress/          # 进度文件
-    └── archive/           # 映射数据
-        └── tokyo_complete_mapping.json
+├── parallel_poi_crawler.py     # 主程序 - 多进程爬虫控制器
+├── address_converter.py        # 地址转换工具
+├── info_tool.py               # POI信息提取模块
+├── driver_action.py           # 浏览器自动化操作
+├── requirements.txt           # Python依赖列表
+├── CLAUDE.md                 # 开发指南
+├── README.md                 # 项目说明
+└── data/                     # 数据目录
+    ├── input/               # 爬取输入文件目录
+    ├── oring_add/          # 地址转换输入文件目录
+    ├── output/             # POI输出结果目录
+    ├── progress/           # 进度跟踪文件目录
+    └── archive/            # 映射数据存档
+        ├── tokyo_complete_mapping.json  # 地址映射数据
+        └── x-ken-all.csv              # 邮编数据
 ```
 
-## 地址转换说明
+## 高级功能
 
-地址转换工具基于预设的映射数据，能够将日文地址转换为标准化的英文格式：
+### 断点续传机制
+- 程序会自动在 `data/progress/` 目录保存进度
+- 重启后自动从上次中断位置继续
+- 删除进度文件可重新开始爬取
 
-- 支持有丁目和无丁目的地址格式
-- 自动查找对应的邮编
-- 统一使用英文区名和地名
-- 直接覆盖原文件，无备份
+### 性能优化
+- 默认工作进程数：CPU核心数-1
+- 批量大小：50条记录/批次
+- 驱动池复用：减少浏览器启动开销
+
+### 地址转换原理
+基于预建的东京地区映射数据库：
+- 区名映射：日文区名→英文区名
+- 地名映射：日文地名→英文地名  
+- 邮编映射：地区→对应邮编
+- 格式标准化：统一英文地址格式
+
+## 故障排除
+
+### 常见问题
+
+1. **Chrome驱动问题**
+   ```bash
+   # 手动更新Chrome驱动
+   pip install --upgrade webdriver-manager
+   ```
+
+2. **内存不足**
+   ```bash
+   # 减少工作进程数
+   python parallel_poi_crawler.py --all --workers 2
+   ```
+
+3. **网络超时**
+   - 检查网络连接稳定性
+   - 考虑使用VPN（如访问受限）
+
+4. **数据格式错误**
+   - 确保输入CSV包含必需列
+   - 检查坐标格式是否为小数
+
+### 日志查看
+程序运行日志会显示错误信息，注意查看控制台输出。
+
+## 注意事项
+
+- 地址转换会直接覆盖原文件，请提前备份重要数据
+- 爬取大量数据时请确保网络稳定
+- 遵守Google Maps服务条款，合理控制请求频率
+- 建议在非高峰时段运行大批量任务
+
+## 开发指南
+
+参考 `CLAUDE.md` 文件了解代码架构和开发规范。
