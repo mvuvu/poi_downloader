@@ -38,6 +38,8 @@ Thumbs.db
 
 # Project specific
 data/output/*.csv
+data/progress/*.json
+data/archive/
 logs/
 *.log
 chromedriver

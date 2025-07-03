@@ -14,6 +14,8 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import WebDriverException, TimeoutException
 import sys
+import json
+import argparse
 
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
 from driver_action import click_on_more_button, scroll_poi_section
@@ -23,13 +25,17 @@ logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %
 
 
 class ParallelPOICrawler:
-    def __init__(self, max_workers=None, output_dir="data/output", batch_size=50):
+    def __init__(self, max_workers=None, output_dir="data/output", batch_size=50, enable_resume=True):
         self.max_workers = max_workers or max(1, mp.cpu_count() - 1)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.batch_size = batch_size
         self.output_file = None
         self._driver_pool = {}  # 驱动池缓存
+        self.enable_resume = enable_resume
+        self.progress_dir = Path("data/progress")
+        self.progress_dir.mkdir(parents=True, exist_ok=True)
+        self.progress_file = None
         
     def create_driver(self):
 
@@ -79,6 +85,99 @@ class ParallelPOICrawler:
 
         
         return webdriver.Chrome(service=service, options=options)
+
+    def _save_progress(self, district_name, completed_batches, total_batches, total_success, total_errors):
+        """保存进度到JSON文件"""
+        if not self.enable_resume:
+            return
+            
+        progress_data = {
+            'district_name': district_name,
+            'completed_batches': completed_batches,
+            'total_batches': total_batches,
+            'total_success': total_success,
+            'total_errors': total_errors,
+            'output_file': str(self.output_file),
+            'timestamp': time.time()
+        }
+        
+        with open(self.progress_file, 'w', encoding='utf-8') as f:
+            json.dump(progress_data, f, ensure_ascii=False, indent=2)
+    
+    def _load_progress(self, district_name):
+        """加载进度文件"""
+        if not self.enable_resume or not self.progress_file.exists():
+            return None
+            
+        try:
+            with open(self.progress_file, 'r', encoding='utf-8') as f:
+                progress_data = json.load(f)
+                
+            # 检查是否是同一个区的进度
+            if progress_data.get('district_name') == district_name:
+                return progress_data
+        except (json.JSONDecodeError, KeyError, FileNotFoundError):
+            pass
+            
+        return None
+    
+    def _cleanup_progress(self):
+        """清理进度文件"""
+        if self.progress_file and self.progress_file.exists():
+            try:
+                self.progress_file.unlink()
+            except:
+                pass
+    
+    def list_pending_tasks(self):
+        """列出所有未完成的任务"""
+        progress_files = list(self.progress_dir.glob("*_progress.json"))
+        if not progress_files:
+            print("没有发现未完成的任务")
+            return
+        
+        print("未完成的任务:")
+        print("=" * 60)
+        for progress_file in progress_files:
+            try:
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                district = data['district_name']
+                completed = data['completed_batches']
+                total = data['total_batches']
+                success = data['total_success']
+                errors = data['total_errors']
+                timestamp = data['timestamp']
+                
+                progress_percent = (completed / total) * 100
+                time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+                
+                print(f"区域: {district}")
+                print(f"进度: {completed}/{total} 批次 ({progress_percent:.1f}%)")
+                print(f"成功: {success}, 失败: {errors}")
+                print(f"最后更新: {time_str}")
+                print(f"输出文件: {data['output_file']}")
+                print("-" * 60)
+                
+            except Exception as e:
+                print(f"读取进度文件 {progress_file} 失败: {e}")
+    
+    def clean_all_progress(self):
+        """清理所有进度文件"""
+        progress_files = list(self.progress_dir.glob("*_progress.json"))
+        if not progress_files:
+            print("没有进度文件需要清理")
+            return
+        
+        for progress_file in progress_files:
+            try:
+                progress_file.unlink()
+                print(f"已清理: {progress_file.name}")
+            except Exception as e:
+                print(f"清理失败 {progress_file.name}: {e}")
+        
+        print(f"共清理了 {len(progress_files)} 个进度文件")
 
     def crawl_batch_addresses(self, addresses_batch):
         """批量处理多个地址，减少进程间通信开销"""
@@ -244,29 +343,52 @@ class ParallelPOICrawler:
 
     def crawl_from_csv(self, input_file):
         df = pd.read_csv(input_file)
-        addresses = df['Address'].tolist() if 'Address' in df.columns else df.iloc[:, -1].tolist()
+        # 优先使用ConvertedAddress字段，如果不存在则使用Address字段
+        if 'ConvertedAddress' in df.columns:
+            addresses = df['ConvertedAddress'].tolist()
+        elif 'Address' in df.columns:
+            addresses = df['Address'].tolist()
+        else:
+            addresses = df.iloc[:, -1].tolist()
         
         # 设置输出文件路径（以区命名）
         district_name = self._extract_district_name(input_file)
-        self.output_file = self.output_dir / f"{district_name}_poi_data_{int(time.time())}.csv"
+        self.progress_file = self.progress_dir / f"{district_name}_progress.json"
         
-        # 创建CSV文件并写入表头
-        header_df = pd.DataFrame(columns=['name', 'rating', 'class', 'add', 'comment_count', 'blt_name', 'lat', 'lng'])
-        header_df.to_csv(self.output_file, index=False, encoding='utf-8-sig')
-        
-        total_addresses = len(addresses)
+        # 检查是否有未完成的进度
+        progress_data = self._load_progress(district_name)
+        start_batch_id = 0
         total_success = 0
         total_errors = 0
+        
+        if progress_data:
+            print(f"发现未完成的{district_name}爬取任务，从第{progress_data['completed_batches']+1}批次继续")
+            start_batch_id = progress_data['completed_batches']
+            total_success = progress_data['total_success']
+            total_errors = progress_data['total_errors']
+            self.output_file = Path(progress_data['output_file'])
+            print(f"恢复输出文件: {self.output_file}")
+        else:
+            # 新任务，创建新的输出文件
+            self.output_file = self.output_dir / f"{district_name}_poi_data_{int(time.time())}.csv"
+            # 创建CSV文件并写入表头
+            header_df = pd.DataFrame(columns=['name', 'rating', 'class', 'add', 'comment_count', 'blt_name', 'lat', 'lng'])
+            header_df.to_csv(self.output_file, index=False, encoding='utf-8-sig')
+        
+        total_addresses = len(addresses)
         
         # 使用更大的批次以减少批次间等待时间
         optimized_batch_size = min(self.batch_size * 2, 100)  # 动态调整批次大小
         total_batches = (total_addresses + optimized_batch_size - 1) // optimized_batch_size
         
-        print(f"开始爬取 {district_name} {total_addresses} 个地址，分 {total_batches} 批次处理")
+        if start_batch_id == 0:
+            print(f"开始爬取 {district_name} {total_addresses} 个地址，分 {total_batches} 批次处理")
+        else:
+            print(f"继续爬取 {district_name}，剩余 {total_batches - start_batch_id} 批次")
         print(f"优化批次大小: {optimized_batch_size}, 最大并发: {self.max_workers}")
         print(f"输出文件: {self.output_file}\n")
         
-        for batch_id in range(total_batches):
+        for batch_id in range(start_batch_id, total_batches):
             start_idx = batch_id * optimized_batch_size
             end_idx = min(start_idx + optimized_batch_size, total_addresses)
             
@@ -286,9 +408,16 @@ class ParallelPOICrawler:
                   f"成功 {success}, 失败 {errors}, "
                   f"耗时 {batch_end_time - batch_start_time:.2f}s, "
                   f"总进度 {end_idx}/{total_addresses}\n")
+            
+            # 保存进度
+            self._save_progress(district_name, batch_id, total_batches, total_success, total_errors)
         
         print(f"\n{district_name} 爬取完成！总成功: {total_success}, 总失败: {total_errors}")
         print(f"数据已保存到: {self.output_file}")
+        
+        # 清理进度文件
+        self._cleanup_progress()
+        
         return total_success, total_errors
 
     def _warm_up_drivers(self):
@@ -309,7 +438,7 @@ class ParallelPOICrawler:
                 except:
                     pass
 
-    def crawl_all_districts(self, input_dir="data/input"):
+    def crawl_all_districts(self, input_dir="data/input", resume_single_district=None):
         """批量处理input目录中的所有区文件"""
         input_path = Path(input_dir)
         csv_files = list(input_path.glob("*.csv"))
@@ -368,25 +497,63 @@ class ParallelPOICrawler:
 
 
 def main():
-    if len(sys.argv) < 2:
+    parser = argparse.ArgumentParser(description='POI爬虫 - 支持断点续传')
+    parser.add_argument('input_file', nargs='?', help='输入CSV文件路径')
+    parser.add_argument('--all', action='store_true', help='批量处理所有区文件')
+    parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
+    parser.add_argument('--workers', type=int, default=max(4, mp.cpu_count()), help='并发工作进程数')
+    parser.add_argument('--batch-size', type=int, default=30, help='批次大小')
+    parser.add_argument('--status', action='store_true', help='查看未完成任务状态')
+    parser.add_argument('--clean-progress', action='store_true', help='清理所有进度文件')
+    
+    args = parser.parse_args()
+    
+    # 创建爬虫实例用于管理功能
+    crawler = ParallelPOICrawler(enable_resume=True)
+    
+    # 处理管理命令
+    if args.status:
+        crawler.list_pending_tasks()
+        return
+    
+    if args.clean_progress:
+        crawler.clean_all_progress()
+        return
+    
+    if not args.input_file and not args.all:
         print("用法:")
-        print("  单个文件: python parallel_poi_crawler.py <输入CSV文件>")
-        print("  批量处理: python parallel_poi_crawler.py --all")
+        print("  单个文件: python parallel_poi_crawler.py <输入CSV文件> [选项]")
+        print("  批量处理: python parallel_poi_crawler.py --all [选项]")
+        print("  进度管理: python parallel_poi_crawler.py --status | --clean-progress")
+        print("")
+        print("选项:")
+        print("  --no-resume        禁用断点续传功能")
+        print("  --workers N        设置并发工作进程数 (默认: CPU核心数)")
+        print("  --batch-size N     设置批次大小 (默认: 30)")
+        print("  --status          查看未完成任务状态")
+        print("  --clean-progress  清理所有进度文件")
         print("")
         print("示例:")
         print("  python parallel_poi_crawler.py data/input/千代田区_complete.csv")
         print("  python parallel_poi_crawler.py --all")
+        print("  python parallel_poi_crawler.py --all --no-resume")
+        print("  python parallel_poi_crawler.py --status")
         return
     
-    # 更优的默认配置：更多工作进程，更大批次
-    crawler = ParallelPOICrawler(max_workers=max(4, mp.cpu_count()), batch_size=30)
+    # 创建爬虫实例
+    enable_resume = not args.no_resume
+    crawler = ParallelPOICrawler(
+        max_workers=args.workers, 
+        batch_size=args.batch_size,
+        enable_resume=enable_resume
+    )
     
-    if sys.argv[1] == "--all":
+    if args.all:
         # 批量处理所有区文件
         crawler.crawl_all_districts()
     else:
         # 处理单个文件
-        input_file = sys.argv[1]
+        input_file = args.input_file
         if not os.path.exists(input_file):
             print(f"文件不存在: {input_file}")
             return
