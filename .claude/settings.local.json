@@ -16,7 +16,8 @@
       "Bash(grep:*)",
       "Bash(cat:*)",
       "Bash(mkdir:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(^C)"
     ],
     "deny": []
   }
