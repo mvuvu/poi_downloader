@@ -8,6 +8,7 @@
 - **断点续传** - 进度自动保存，支持中断后继续爬取
 - **智能地址转换** - 日文地址自动转换为标准英文格式
 - **静默运行** - 无头浏览器模式，后台稳定运行
+- **灵活文件选择** - 支持多文件、通配符、文件列表等多种选择方式
 - **批量处理** - 支持批量处理多个区域文件
 - **进度监控** - 实时查看爬取进度和状态
 
@@ -42,18 +43,44 @@ python parallel_poi_crawler.py --all
 
 ### POI数据爬取
 
+#### 基本使用
 ```bash
 # 处理所有区域文件
 python parallel_poi_crawler.py --all
 
-# 处理指定文件
+# 处理单个文件
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
 
 # 查看爬取进度和状态
 python parallel_poi_crawler.py --status
+```
 
+#### 多文件选择（新功能）
+```bash
+# 处理多个指定文件
+python parallel_poi_crawler.py data/input/千代田区.csv data/input/港区.csv
+
+# 使用通配符选择文件
+python parallel_poi_crawler.py --pattern "data/input/*区_complete*.csv"
+python parallel_poi_crawler.py --pattern "data/input/*_optimized*.csv"
+
+# 从文件列表读取
+python parallel_poi_crawler.py --file-list files_to_process.txt
+
+# 组合使用
+python parallel_poi_crawler.py file1.csv --pattern "*_complete*.csv" --file-list more.txt
+```
+
+#### 高级选项
+```bash
 # 使用自定义工作进程数
 python parallel_poi_crawler.py --all --workers 4
+
+# 禁用断点续传
+python parallel_poi_crawler.py --pattern "*.csv" --no-resume
+
+# 自定义批次大小
+python parallel_poi_crawler.py --all --batch-size 100
 ```
 
 ### 地址转换
@@ -107,6 +134,7 @@ poi_crawler/
 ├── requirements.txt           # Python依赖列表
 ├── CLAUDE.md                 # 开发指南
 ├── README.md                 # 项目说明
+├── MULTIFILE_USAGE.md        # 多文件选择功能详细指南
 └── data/                     # 数据目录
     ├── input/               # 爬取输入文件目录
     ├── oring_add/          # 地址转换输入文件目录
@@ -135,6 +163,17 @@ poi_crawler/
 - 地名映射：日文地名→英文地名  
 - 邮编映射：地区→对应邮编
 - 格式标准化：统一英文地址格式
+
+### 文件列表格式
+创建文件列表 `files_to_process.txt`：
+```
+# 这是注释，会被忽略
+data/input/千代田区_complete.csv
+data/input/港区_complete.csv
+# 空行会被忽略
+
+data/input/中央区_complete.csv
+```
 
 ## 故障排除
 

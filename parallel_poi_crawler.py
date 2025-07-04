@@ -543,11 +543,56 @@ class ParallelPOICrawler:
         # 不再需要合并，因为数据实时写入单个文件
         pass
 
+    def crawl_multiple_files(self, file_paths):
+        """处理多个指定的CSV文件"""
+        print(f"准备处理 {len(file_paths)} 个文件...\n")
+        
+        # 预热驱动
+        self._warm_up_drivers()
+        
+        all_success = 0
+        all_errors = 0
+        processed_files = []
+        
+        start_time = time.time()
+        
+        for i, file_path in enumerate(file_paths):
+            file_name = os.path.basename(file_path)
+            print(f"{'='*60}")
+            print(f"处理第 {i+1}/{len(file_paths)} 个文件: {file_name}")
+            print(f"{'='*60}")
+            
+            try:
+                success, errors = self.crawl_from_csv(file_path)
+                all_success += success
+                all_errors += errors
+                processed_files.append(f"{file_name}: 成功{success}, 失败{errors}")
+                print(f"\n{file_name} 完成 - 成功: {success}, 失败: {errors}\n")
+            except Exception as e:
+                print(f"处理文件 {file_name} 时出错: {e}")
+                processed_files.append(f"{file_name}: 处理失败")
+                continue
+        
+        total_time = time.time() - start_time
+        
+        print(f"{'='*60}")
+        print(f"所有文件处理完成！")
+        print(f"{'='*60}")
+        print(f"总耗时: {total_time/60:.1f} 分钟")
+        print(f"总成功: {all_success}")
+        print(f"总失败: {all_errors}")
+        print(f"处理了 {len(processed_files)} 个文件:")
+        
+        for file_summary in processed_files:
+            print(f"  {file_summary}")
+
 
 def main():
-    parser = argparse.ArgumentParser(description='POI爬虫 - 支持断点续传')
-    parser.add_argument('input_file', nargs='?', help='输入CSV文件路径')
+    parser = argparse.ArgumentParser(description='POI爬虫 - 支持断点续传和多文件选择')
+    parser.add_argument('input_files', nargs='*', help='输入CSV文件路径（可以指定多个）')
     parser.add_argument('--all', action='store_true', help='批量处理所有区文件')
+    parser.add_argument('--pattern', type=str, help='使用通配符模式选择文件，如 "*区_complete*.csv"')
+    parser.add_argument('--file-list', type=str, help='从文件中读取要处理的文件列表（每行一个文件路径）')
     parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
     parser.add_argument('--workers', type=int, default=max(4, mp.cpu_count()), help='并发工作进程数')
     parser.add_argument('--batch-size', type=int, default=30, help='批次大小')
@@ -568,13 +613,18 @@ def main():
         crawler.clean_all_progress()
         return
     
-    if not args.input_file and not args.all:
+    if not args.input_files and not args.all and not args.pattern and not args.file_list:
         print("用法:")
         print("  单个文件: python parallel_poi_crawler.py <输入CSV文件> [选项]")
+        print("  多个文件: python parallel_poi_crawler.py <文件1> <文件2> ... [选项]")
+        print('  通配符:   python parallel_poi_crawler.py --pattern "*区_complete*.csv" [选项]')
+        print("  文件列表: python parallel_poi_crawler.py --file-list files.txt [选项]")
         print("  批量处理: python parallel_poi_crawler.py --all [选项]")
         print("  进度管理: python parallel_poi_crawler.py --status | --clean-progress")
         print("")
         print("选项:")
+        print("  --pattern PATTERN  使用通配符模式选择文件")
+        print("  --file-list FILE   从文件中读取文件列表")
         print("  --no-resume        禁用断点续传功能")
         print("  --workers N        设置并发工作进程数 (默认: CPU核心数)")
         print("  --batch-size N     设置批次大小 (默认: 30)")
@@ -583,6 +633,9 @@ def main():
         print("")
         print("示例:")
         print("  python parallel_poi_crawler.py data/input/千代田区_complete.csv")
+        print("  python parallel_poi_crawler.py data/input/千代田区.csv data/input/港区.csv")
+        print('  python parallel_poi_crawler.py --pattern "data/input/*区_complete*.csv"')
+        print("  python parallel_poi_crawler.py --file-list files_to_process.txt")
         print("  python parallel_poi_crawler.py --all")
         print("  python parallel_poi_crawler.py --all --no-resume")
         print("  python parallel_poi_crawler.py --status")
@@ -596,17 +649,59 @@ def main():
         enable_resume=enable_resume
     )
     
+    # 收集要处理的文件列表
+    files_to_process = []
+    
     if args.all:
         # 批量处理所有区文件
         crawler.crawl_all_districts()
+        return
+    
+    # 从命令行参数收集文件
+    if args.input_files:
+        files_to_process.extend(args.input_files)
+    
+    # 从通配符模式收集文件
+    if args.pattern:
+        import glob
+        pattern_files = glob.glob(args.pattern)
+        if pattern_files:
+            files_to_process.extend(pattern_files)
+            print(f"通配符 '{args.pattern}' 匹配到 {len(pattern_files)} 个文件")
+        else:
+            print(f"警告: 通配符 '{args.pattern}' 没有匹配到任何文件")
+    
+    # 从文件列表读取
+    if args.file_list:
+        if os.path.exists(args.file_list):
+            with open(args.file_list, 'r', encoding='utf-8') as f:
+                list_files = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+                files_to_process.extend(list_files)
+                print(f"从 '{args.file_list}' 读取了 {len(list_files)} 个文件")
+        else:
+            print(f"警告: 文件列表 '{args.file_list}' 不存在")
+    
+    # 去重并验证文件
+    files_to_process = list(dict.fromkeys(files_to_process))  # 保持顺序的去重
+    valid_files = []
+    
+    for file_path in files_to_process:
+        if os.path.exists(file_path):
+            valid_files.append(file_path)
+        else:
+            print(f"警告: 文件不存在 - {file_path}")
+    
+    if not valid_files:
+        print("错误: 没有找到有效的文件进行处理")
+        return
+    
+    # 处理文件
+    if len(valid_files) == 1:
+        # 单个文件直接处理
+        crawler.crawl_from_csv(valid_files[0])
     else:
-        # 处理单个文件
-        input_file = args.input_file
-        if not os.path.exists(input_file):
-            print(f"文件不存在: {input_file}")
-            return
-        
-        crawler.crawl_from_csv(input_file)
+        # 多个文件批量处理
+        crawler.crawl_multiple_files(valid_files)
 
 
 if __name__ == "__main__":

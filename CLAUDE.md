@@ -46,6 +46,15 @@ python parallel_poi_crawler.py --all
 # Process single file
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
 
+# Process multiple files
+python parallel_poi_crawler.py file1.csv file2.csv file3.csv
+
+# Use wildcard pattern
+python parallel_poi_crawler.py --pattern "data/input/*区_complete*.csv"
+
+# Use file list
+python parallel_poi_crawler.py --file-list files_to_process.txt
+
 # Check crawling status
 python parallel_poi_crawler.py --status
 ```
@@ -95,3 +104,16 @@ python address_converter.py --regenerate
 - Progress files enable resuming but should be deleted for fresh crawls
 - Maximum workers default to CPU count - 1 for optimal performance
 - Address conversion directly overwrites input files (no backup created)
+
+## Recent Updates
+
+### Multi-file Selection (2025-07)
+- Added support for processing multiple files in a single command
+- Implemented wildcard pattern matching for file selection
+- Added file list support for batch processing from text files
+- All file selection methods support existing options (--workers, --batch-size, etc.)
+- Files are automatically deduplicated if selected multiple times
+
+### Address Format Fixes (2025-07)
+- Fixed English spelling errors in converted addresses: 'jyu'→'ju', 'shya'→'sha', 'jya'→'ja'
+- Updated Kanda area addresses to use separated format: '+Kanda+Surugadai' instead of '+Kandasurugadai'
