@@ -180,39 +180,91 @@ class ParallelPOICrawler:
         print(f"共清理了 {len(progress_files)} 个进度文件")
 
     def crawl_batch_addresses(self, addresses_batch):
-        """批量处理多个地址，减少进程间通信开销"""
+        """批量处理多个地址，实现三级重试机制"""
         batch_results = []
         driver = None
         
         try:
             driver = self.create_driver()
             
-            for worker_id, address, idx in addresses_batch:
+            for worker_id, address_obj, idx in addresses_batch:
                 try:
-                    result = self._crawl_poi_info(address, driver)
+                    # 获取当前使用的地址和重试状态
+                    current_address = address_obj.get('primary') if isinstance(address_obj, dict) else address_obj
+                    used_address = current_address
+                    retry_info = []
                     
-                    if result is not None and not result.empty:
+                    # 第一次尝试：主地址
+                    result = self._crawl_poi_info(current_address, driver)
+                    
+                    # 检查是否需要第二次重试（用日文地址）
+                    should_retry_secondary = (isinstance(result, dict) and 
+                                            not result.get('is_building', True))
+                    
+                    if should_retry_secondary and isinstance(address_obj, dict) and address_obj.get('secondary'):
+                        retry_result = self._crawl_poi_info(address_obj['secondary'], driver)
+                        retry_info.append(f"第二次尝试: {address_obj['secondary']}")
+                        
+                        # 检查第二次尝试是否成功
+                        if (isinstance(retry_result, dict) and 
+                            (retry_result.get('is_building', False) or 
+                             retry_result.get('status') == 'success')):
+                            result = retry_result
+                            used_address = address_obj['secondary']
+                        else:
+                            # 检查是否需要第三次重试（用ConvertedAddress）
+                            should_retry_fallback = (isinstance(retry_result, dict) and 
+                                                    not retry_result.get('is_building', True))
+                            
+                            if should_retry_fallback and address_obj.get('fallback'):
+                                fallback_result = self._crawl_poi_info(address_obj['fallback'], driver)
+                                retry_info.append(f"第三次尝试: {address_obj['fallback']}")
+                                
+                                # 检查第三次尝试是否成功
+                                if (isinstance(fallback_result, dict) and 
+                                    (fallback_result.get('is_building', False) or 
+                                     fallback_result.get('status') == 'success')):
+                                    result = fallback_result
+                                    used_address = address_obj['fallback']
+                    
+                    # 判断最终结果是否成功
+                    if (isinstance(result, dict) and 
+                        result.get('status') == 'success' and 
+                        result.get('data') is not None):
                         batch_results.append({
                             'success': True,
-                            'data': result,
-                            'address': address,
+                            'data': result['data'],
+                            'address': used_address,
                             'worker_id': worker_id,
-                            'index': idx
+                            'index': idx,
+                            'retry_info': retry_info
                         })
                     else:
+                        # 确定错误类型
+                        if isinstance(result, dict):
+                            if not result.get('is_building', True):
+                                error_msg = '不是建筑物'
+                            elif result.get('poi_count', 0) == 0:
+                                error_msg = '未找到POI数据'
+                            else:
+                                error_msg = result.get('status', '未知错误')
+                        else:
+                            error_msg = '处理异常'
+                            
                         batch_results.append({
                             'success': False,
-                            'error': '未找到POI数据或不是建筑物',
-                            'address': address,
+                            'error': error_msg,
+                            'address': used_address,
                             'worker_id': worker_id,
-                            'index': idx
+                            'index': idx,
+                            'retry_info': retry_info
                         })
                         
                 except Exception as e:
                     batch_results.append({
                         'success': False,
                         'error': str(e),
-                        'address': address,
+                        'address': current_address,
                         'worker_id': worker_id,
                         'index': idx
                     })
@@ -231,6 +283,7 @@ class ParallelPOICrawler:
         result = self.crawl_batch_addresses([address_data])
         return result[0] if result else {'success': False, 'error': '处理失败'}
 
+
     def _crawl_poi_info(self, address, driver):
         url = f'https://www.google.com/maps/place/{address}'
         driver.get(url)
@@ -240,6 +293,7 @@ class ParallelPOICrawler:
         has_scrolled = False
         poi_count = 0
         comment_count = 0
+        
         
         if is_building:
             place_name = get_building_name(driver)
@@ -267,15 +321,89 @@ class ParallelPOICrawler:
                 # 单地址完成总结
                 print(f"{address}  | POI: {poi_count}")
 
-                return df
+                return {
+                    'data': df,
+                    'is_building': True,
+                    'poi_count': poi_count,
+                    'status': 'success'
+                }
             
             else:
             # 单地址完成总结
                 print(f"{address}  | POI: {poi_count}")
-                return None
+                return {
+                    'data': None,
+                    'is_building': True,
+                    'poi_count': 0,
+                    'status': 'no_poi_data'
+                }
+
+        
         else:# 非建筑物也输出总结
             print(f"{address} | 建筑物: {'是' if is_building else '否'} | POI: {poi_count}")
-            return None
+            return {
+                'data': None,
+                'is_building': False,
+                'poi_count': 0,
+                'status': 'not_building'
+            }
+    ''' 
+    def _crawl_poi_info(self, address, driver):
+
+        url = f'https://www.google.com/maps/place/{address}'
+        driver.get(url)
+        
+        #place_type = get_building_type(driver)
+        #is_building = place_type == '建筑物'
+        #has_scrolled = False
+        poi_count = 0
+        #comment_count = 0
+        more_button = driver.find_elements('class name', 'M77dve')
+        
+        if more_button:
+            click_on_more_button(driver)
+            scroll_poi_section(driver)
+            #has_scrolled = True
+        
+        df = get_all_poi_info(driver)
+        
+
+            
+        if df is not None and not df.empty:
+            place_name = get_building_name(driver)
+            poi_count = len(df)
+            final_url = wait_for_coords_url(driver)
+
+            if final_url:
+                lat, lng = get_coords(final_url)
+            else:
+                print("❌ 没有拿到有效的坐标 URL")
+
+            df['blt_name'] = place_name
+            df['lat'] = lat
+            df['lng'] = lng
+            # comment_count已经在get_all_poi_info中为每个POI单独设置
+            
+            # 单地址完成总结
+            print(f"{address}  | POI: {poi_count}")
+
+            return {
+                'data': df,
+                'is_building': True,
+                'poi_count': poi_count,
+                'status': 'success'}
+        
+        else:
+        # 单地址完成总结
+            print(f"{address}  | POI: {poi_count}")
+            return {
+                'data': None,
+                'is_building': False,
+                'poi_count': 0,
+                'status': 'no_poi_data'
+                }
+        
+    '''
 
     def process_batch(self, addresses_batch, batch_id):
         success_count = 0
@@ -313,6 +441,11 @@ class ParallelPOICrawler:
                     
                 success_count += sum(1 for r in batch_results if r['success'])
                 error_count += sum(1 for r in batch_results if not r['success'])
+                
+                # 统计重试成功的案例
+                retry_success_count = sum(1 for r in batch_results if r.get('retry_info') and r['success'])
+                if retry_success_count > 0:
+                    print(f"  批次中有 {retry_success_count} 个地址通过重试成功")
         
         # 检查是否整个批次都失败了（都不是建筑物）
         if success_count == 0 and error_count == len(addresses_batch):
@@ -390,13 +523,39 @@ class ParallelPOICrawler:
 
     def crawl_from_csv(self, input_file):
         df = pd.read_csv(input_file)
-        # 优先使用ConvertedAddress字段，如果不存在则使用Address字段
-        if 'ConvertedAddress' in df.columns:
-            addresses = df['ConvertedAddress'].tolist()
-        elif 'Address' in df.columns:
-            addresses = df['Address'].tolist()
-        else:
-            addresses = df.iloc[:, -1].tolist()
+        
+        # 创建三级地址对象：FormattedAddress -> Address -> ConvertedAddress
+        addresses = []
+        for index, row in df.iterrows():
+            address_obj = {
+                'primary': None,     # 第一优先：FormattedAddress（新格式）
+                'secondary': None,   # 第二优先：Address（日文原地址）
+                'fallback': None,    # 第三优先：ConvertedAddress（旧格式）
+                'index': index
+            }
+            
+            # 第一优先：FormattedAddress（新格式）
+            if 'FormattedAddress' in df.columns and pd.notna(row['FormattedAddress']) and row['FormattedAddress'].strip():
+                address_obj['primary'] = row['FormattedAddress'].strip()
+            
+            # 第二优先：Address（日文原地址）
+            if 'Address' in df.columns and pd.notna(row['Address']):
+                address_obj['secondary'] = row['Address']
+            
+            # 第三优先：ConvertedAddress（旧格式）
+            if 'ConvertedAddress' in df.columns and pd.notna(row['ConvertedAddress']) and row['ConvertedAddress'].strip():
+                address_obj['fallback'] = row['ConvertedAddress'].strip()
+            
+            # 如果没有主地址，向上提升
+            if not address_obj['primary'] and address_obj['secondary']:
+                address_obj['primary'] = address_obj['secondary']
+                address_obj['secondary'] = address_obj['fallback']
+                address_obj['fallback'] = None
+            elif not address_obj['primary'] and address_obj['fallback']:
+                address_obj['primary'] = address_obj['fallback']
+                address_obj['fallback'] = None
+            
+            addresses.append(address_obj)
         
         # 设置输出文件路径（以区命名）
         district_name = self._extract_district_name(input_file)

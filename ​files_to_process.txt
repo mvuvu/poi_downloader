@@ -1,6 +1,0 @@
-# 测试文件列表
-data/input/新宿区_optimized_1751437745.csv
-data/input/渋谷区_optimized_1751446693.csv
-data/input/港区_complete_1751436047.csv
-data/input/葛飾区_optimized_1751458364.csv
-data/input/足立区_optimized_1751456991.csv
