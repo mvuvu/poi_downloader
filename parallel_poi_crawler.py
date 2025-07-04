@@ -198,34 +198,21 @@ class ParallelPOICrawler:
                     result = self._crawl_poi_info(current_address, driver)
                     
                     # 检查是否需要第二次重试（用日文地址）
+                    # 条件：第一次不是建筑物且POI数量为0
                     should_retry_secondary = (isinstance(result, dict) and 
-                                            not result.get('is_building', True))
+                                            not result.get('is_building', False) and
+                                            result.get('poi_count', 0) == 0)
                     
                     if should_retry_secondary and isinstance(address_obj, dict) and address_obj.get('secondary'):
-                        retry_result = self._crawl_poi_info(address_obj['secondary'], driver)
+                        retry_result = self._crawl_poi_info(address_obj['secondary'], driver, check_building_type=False)
                         retry_info.append(f"第二次尝试: {address_obj['secondary']}")
                         
                         # 检查第二次尝试是否成功
                         if (isinstance(retry_result, dict) and 
-                            (retry_result.get('is_building', False) or 
-                             retry_result.get('status') == 'success')):
+                            retry_result.get('status') == 'success'):
                             result = retry_result
                             used_address = address_obj['secondary']
-                        else:
-                            # 检查是否需要第三次重试（用ConvertedAddress）
-                            should_retry_fallback = (isinstance(retry_result, dict) and 
-                                                    not retry_result.get('is_building', True))
-                            
-                            if should_retry_fallback and address_obj.get('fallback'):
-                                fallback_result = self._crawl_poi_info(address_obj['fallback'], driver)
-                                retry_info.append(f"第三次尝试: {address_obj['fallback']}")
-                                
-                                # 检查第三次尝试是否成功
-                                if (isinstance(fallback_result, dict) and 
-                                    (fallback_result.get('is_building', False) or 
-                                     fallback_result.get('status') == 'success')):
-                                    result = fallback_result
-                                    used_address = address_obj['fallback']
+                        # 第二次尝试后不再进行第三次尝试
                     
                     # 判断最终结果是否成功
                     if (isinstance(result, dict) and 
@@ -242,9 +229,7 @@ class ParallelPOICrawler:
                     else:
                         # 确定错误类型
                         if isinstance(result, dict):
-                            if not result.get('is_building', True):
-                                error_msg = '不是建筑物'
-                            elif result.get('poi_count', 0) == 0:
+                            if result.get('poi_count', 0) == 0:
                                 error_msg = '未找到POI数据'
                             else:
                                 error_msg = result.get('status', '未知错误')
@@ -284,68 +269,65 @@ class ParallelPOICrawler:
         return result[0] if result else {'success': False, 'error': '处理失败'}
 
 
-    def _crawl_poi_info(self, address, driver):
+    def _crawl_poi_info(self, address, driver, check_building_type=True):
         url = f'https://www.google.com/maps/place/{address}'
         driver.get(url)
         
-        place_type = get_building_type(driver)
-        is_building = place_type == '建筑物'
-        has_scrolled = False
         poi_count = 0
-        comment_count = 0
+        place_type = 'unknown'
+        is_building = False
         
+        # 尝试点击更多按钮以展开POI列表
+        more_button = driver.find_elements('class name', 'M77dve')
+        if more_button:
+            click_on_more_button(driver)
+            scroll_poi_section(driver)
         
-        if is_building:
-            place_name = get_building_name(driver)
+        # 获取POI信息
+        df = get_all_poi_info(driver)
+        
+        if df is not None and not df.empty:
+            # 获取地点名称（可能是建筑物名称或其他地点名称）
+            try:
+                place_name = get_building_name(driver)
+            except:
+                place_name = 'Unknown Location'
             
-            more_button = driver.find_elements('class name', 'M77dve')
-            if more_button:
-                click_on_more_button(driver)
-                scroll_poi_section(driver)
-                #has_scrolled = True
-            
-            df = get_all_poi_info(driver)
-            
-            if df is not None and not df.empty:
-                poi_count = len(df)
-                final_url = wait_for_coords_url(driver)
-                if final_url:
-                    lat, lng = get_coords(final_url)
-                else:
-                    print("❌ 没有拿到有效的坐标 URL")
-                df['blt_name'] = place_name
-                df['lat'] = lat
-                df['lng'] = lng
-                # comment_count已经在get_all_poi_info中为每个POI单独设置
-                
-                # 单地址完成总结
-                print(f"{address}  | POI: {poi_count}")
-
-                return {
-                    'data': df,
-                    'is_building': True,
-                    'poi_count': poi_count,
-                    'status': 'success'
-                }
-            
+            poi_count = len(df)
+            final_url = wait_for_coords_url(driver)
+            if final_url:
+                lat, lng = get_coords(final_url)
             else:
+                print("❌ 没有拿到有效的坐标 URL")
+                lat, lng = None, None
+            
+            df['blt_name'] = place_name
+            df['lat'] = lat
+            df['lng'] = lng
+            
             # 单地址完成总结
-                print(f"{address}  | POI: {poi_count}")
-                return {
-                    'data': None,
-                    'is_building': True,
-                    'poi_count': 0,
-                    'status': 'no_poi_data'
-                }
+            print(f"{address}  | POI: {poi_count} | 状态: 已保存")
 
-        
-        else:# 非建筑物也输出总结
-            print(f"{address} | 建筑物: {'是' if is_building else '否'} | POI: {poi_count}")
+            return {
+                'data': df,
+                'is_building': True,  # 有POI就认为是有效地点
+                'poi_count': poi_count,
+                'status': 'success'
+            }
+        else:
+            # 没有找到POI数据，只有在需要重试判断时才检查建筑物类型
+            if check_building_type:
+                place_type = get_building_type(driver)
+                is_building = place_type == '建筑物'
+                print(f"{address}  | 类型: {place_type} | POI: {poi_count}")
+            else:
+                print(f"{address}  | POI: {poi_count}")
+            
             return {
                 'data': None,
-                'is_building': False,
+                'is_building': is_building,
                 'poi_count': 0,
-                'status': 'not_building'
+                'status': 'no_poi_data'
             }
     ''' 
     def _crawl_poi_info(self, address, driver):
@@ -410,7 +392,9 @@ class ParallelPOICrawler:
         error_count = 0
         
         # 将地址分组，每个进程处理更多地址以减少Chrome启动开销
-        addresses_per_worker = max(1, len(addresses_batch) // self.max_workers)
+        # 确保每个worker至少处理10个地址，避免Chrome启动开销过大
+        min_addresses_per_worker = 10
+        addresses_per_worker = max(min_addresses_per_worker, len(addresses_batch) // self.max_workers)
         worker_batches = []
         
         for i in range(0, len(addresses_batch), addresses_per_worker):
@@ -442,18 +426,15 @@ class ParallelPOICrawler:
                 success_count += sum(1 for r in batch_results if r['success'])
                 error_count += sum(1 for r in batch_results if not r['success'])
                 
-                # 统计重试成功的案例
+                # 统计重试成功的案例（不显示提示信息）
                 retry_success_count = sum(1 for r in batch_results if r.get('retry_info') and r['success'])
-                if retry_success_count > 0:
-                    print(f"  批次中有 {retry_success_count} 个地址通过重试成功")
         
         # 检查是否整个批次都失败了（都不是建筑物）
         if success_count == 0 and error_count == len(addresses_batch):
-            # 检查所有错误是否都是"不是建筑"导致的
+            # 检查所有错误是否都是"未找到POI数据"导致的
             not_building_count = sum(1 for r in all_results 
                                    if not r['success'] and 
-                                   ('不是建筑' in str(r.get('error', '')) or 
-                                    '未找到POI数据' in str(r.get('error', ''))))
+                                   '未找到POI数据' in str(r.get('error', '')))
             
             if not_building_count == len(addresses_batch):
                 # 获取区名
@@ -466,11 +447,11 @@ class ParallelPOICrawler:
                 print(f"区域: {district_name}")
                 print(f"批次: {batch_id + 1}")
                 print(f"地址数量: {len(addresses_batch)}")
-                print(f"状态: 所有地址都不是建筑物（100%失败）")
+                print(f"状态: 所有地址都未找到POI数据（100%失败）")
                 print(f"\n可能的原因:")
                 print(f"  1. 地址格式不正确")
                 print(f"  2. 地址数据已过期或无效")
-                print(f"  3. 该区域可能主要是非建筑物地址（如公园、道路等）")
+                print(f"  3. 该区域可能没有POI数据")
                 print(f"  4. Google Maps API响应异常")
                 print(f"\n建议操作:")
                 print(f"  1. 检查输入CSV文件中的地址格式")
@@ -479,15 +460,15 @@ class ParallelPOICrawler:
                 print(f"{'='*70}\n")
                 
                 # 记录详细信息到日志文件
-                log_file = f"non_building_warnings/{district_name}_batch_{batch_id + 1}_warning.log"
-                os.makedirs("non_building_warnings", exist_ok=True)
+                log_file = f"no_poi_warnings/{district_name}_batch_{batch_id + 1}_warning.log"
+                os.makedirs("no_poi_warnings", exist_ok=True)
                 
                 with open(log_file, 'w', encoding='utf-8') as f:
                     f.write(f"警告日志 - {district_name} 批次 {batch_id + 1}\n")
                     f.write(f"时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"批次大小: {len(addresses_batch)}\n")
                     f.write(f"失败率: 100%\n")
-                    f.write(f"\n失败的地址列表:\n")
+                    f.write(f"\n无POI数据的地址列表:\n")
                     f.write("-" * 50 + "\n")
                     for i, r in enumerate(all_results, 1):
                         f.write(f"{i}. {r['address']}\n")
@@ -585,7 +566,7 @@ class ParallelPOICrawler:
         total_addresses = len(addresses)
         
         # 使用更大的批次以减少批次间等待时间
-        optimized_batch_size = min(self.batch_size * 2, 100)  # 动态调整批次大小
+        optimized_batch_size = min(self.batch_size * 2, 150)  # 动态调整批次大小
         total_batches = (total_addresses + optimized_batch_size - 1) // optimized_batch_size
         
         if start_batch_id == 0:
@@ -753,8 +734,8 @@ def main():
     parser.add_argument('--pattern', type=str, help='使用通配符模式选择文件，如 "*区_complete*.csv"')
     parser.add_argument('--file-list', type=str, help='从文件中读取要处理的文件列表（每行一个文件路径）')
     parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
-    parser.add_argument('--workers', type=int, default=max(4, mp.cpu_count()), help='并发工作进程数')
-    parser.add_argument('--batch-size', type=int, default=30, help='批次大小')
+    parser.add_argument('--workers', type=int, default=min(8, max(2, mp.cpu_count() - 2)), help='并发工作进程数')
+    parser.add_argument('--batch-size', type=int, default=80, help='批次大小')
     parser.add_argument('--status', action='store_true', help='查看未完成任务状态')
     parser.add_argument('--clean-progress', action='store_true', help='清理所有进度文件')
     

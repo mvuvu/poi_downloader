@@ -37,10 +37,8 @@ def get_coords(http_url):
 def get_building_type(driver):
     try:
         place_type_XPATH = '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[2]/div/div[2]/span/span/span'
-        WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.XPATH, place_type_XPATH)))
-
-        
-        
+        # 减少等待时间，从3秒改为1秒
+        WebDriverWait(driver, 1).until(EC.presence_of_element_located((By.XPATH, place_type_XPATH)))
         place_type = driver.find_element(By.XPATH, place_type_XPATH).text
     except:
         place_type = 'nan'
@@ -133,7 +131,7 @@ def get_all_poi_info(driver):
                          'rating': poi_rating_list,	
                          'class' : poi_class_list,	
                          'add' : poi_add_list,
-                         'rating_count': poi_comment_list
+                         'comment_count': poi_comment_list
                         })
     else:
         df = None
