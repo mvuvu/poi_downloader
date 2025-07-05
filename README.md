@@ -2,19 +2,38 @@
 
 从Google Maps并行爬取POI数据，支持断点续传和智能地址转换的高效数据采集工具。
 
+## 版本选择
+
+### Standard 版 (parallel_poi_crawler.py)
+- 稳定可靠，适合生产环境
+- 多进程架构，资源使用保守
+- 推荐日常使用
+
+### Turbo 版 (parallel_poi_crawler_turbo.py)
+- 高性能多线程架构，适合高配置机器
+- 科学的并发配置：12核心机器可达48线程
+- 高效Chrome驱动池管理和资源复用
+- 适合大量数据爬取任务
+
 ## 特性
 
-- **多进程并行爬取** - 支持多核CPU充分利用，提高爬取效率
-- **Chrome实例复用** - 减少Chrome启动开销，大幅提升性能
+### 核心功能
+- **多线程/多进程并行爬取** - 支持多核CPU充分利用，提高爬取效率
+- **Chrome驱动池管理** - 智能复用Chrome实例，减少启动开销
 - **断点续传** - 进度自动保存，支持中断后继续爬取
 - **智能地址转换** - 日文地址自动转换为标准英文格式
+
+### 数据质量保障
 - **自动去重** - 批次级和文件级双重去重机制
-- **智能重试** - 支持日文地址二次尝试，提高成功率
+- **智能重试** - 支持primary→secondary→fallback三层重试
 - **酒店页面过滤** - 自动跳过酒店分类页面，避免无效数据
-- **静默运行** - 无头浏览器模式，后台稳定运行
+- **错误监控和警告** - 完善的错误日志和警告系统
+
+### 操作便利性
 - **灵活文件选择** - 支持多文件、通配符、文件列表等多种选择方式
 - **批量处理** - 支持批量处理多个区域文件
 - **进度监控** - 实时查看爬取进度和状态
+- **静默运行** - 无头浏览器模式，后台稳定运行
 
 ## 系统要求
 
@@ -39,8 +58,12 @@ pip install -r requirements.txt
 ```bash
 # 1. 准备输入数据（CSV文件，包含坐标和地址信息）
 # 2. 放置文件到 data/input/ 目录
-# 3. 开始爬取
+
+# 3a. 使用标准版（推荐）
 python parallel_poi_crawler.py --all
+
+# 3b. 使用Turbo版（高性能）
+python parallel_poi_crawler_turbo.py --all
 ```
 
 ## 详细使用说明
@@ -49,14 +72,19 @@ python parallel_poi_crawler.py --all
 
 #### 基本使用
 ```bash
-# 处理所有区域文件
+# 标准版 - 处理所有区域文件
 python parallel_poi_crawler.py --all
+
+# Turbo版 - 高性能处理
+python parallel_poi_crawler_turbo.py --all
 
 # 处理单个文件
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
+python parallel_poi_crawler_turbo.py data/input/千代田区_complete.csv
 
 # 查看爬取进度和状态
 python parallel_poi_crawler.py --status
+python parallel_poi_crawler_turbo.py --status
 ```
 
 #### 多文件选择（新功能）
@@ -77,8 +105,11 @@ python parallel_poi_crawler.py file1.csv --pattern "*_complete*.csv" --file-list
 
 #### 高级选项
 ```bash
-# 使用自定义工作进程数
+# 标准版 - 使用自定义工作进程数
 python parallel_poi_crawler.py --all --workers 4
+
+# Turbo版 - 自定义线程数（默认：CPU核心数×4）
+python parallel_poi_crawler_turbo.py --all --workers 24
 
 # 禁用断点续传
 python parallel_poi_crawler.py --pattern "*.csv" --no-resume
@@ -131,20 +162,23 @@ python address_converter.py --regenerate
 
 ```
 poi_crawler/
-├── parallel_poi_crawler.py     # 主程序 - 多进程爬虫控制器
-├── address_converter.py        # 地址转换工具
-├── info_tool.py               # POI信息提取模块
-├── driver_action.py           # 浏览器自动化操作
-├── requirements.txt           # Python依赖列表
-├── CLAUDE.md                 # 开发指南
-├── README.md                 # 项目说明
-├── MULTIFILE_USAGE.md        # 多文件选择功能详细指南
-└── data/                     # 数据目录
-    ├── input/               # 爬取输入文件目录
-    ├── oring_add/          # 地址转换输入文件目录
-    ├── output/             # POI输出结果目录
-    ├── progress/           # 进度跟踪文件目录
-    └── archive/            # 映射数据存档
+├── parallel_poi_crawler.py        # 主程序 - 多进程稳定版
+├── parallel_poi_crawler_turbo.py  # Turbo版 - 高性能多线程版
+├── address_converter.py           # 地址转换工具
+├── info_tool.py                  # POI信息提取模块
+├── driver_action.py              # 浏览器自动化操作
+├── requirements.txt              # Python依赖列表
+├── CLAUDE.md                    # 开发指南
+├── README.md                    # 项目说明
+├── TURBO_FIXES.md               # Turbo版优化记录
+└── data/                        # 数据目录
+    ├── input/                  # 爬取输入文件目录
+    ├── output/                 # POI输出结果目录
+    ├── progress/               # 进度跟踪文件目录
+    ├── warnings/               # 警告日志目录
+    ├── no_poi_warnings/        # 无POI警告目录
+    ├── non_building_warnings/  # 非建筑物警告目录
+    └── archive/                # 映射数据存档
         ├── tokyo_complete_mapping.json  # 地址映射数据
         └── x-ken-all.csv              # 邮编数据
 ```
@@ -157,9 +191,18 @@ poi_crawler/
 - 删除进度文件可重新开始爬取
 
 ### 性能优化
+
+#### 标准版 (parallel_poi_crawler.py)
 - 默认工作进程数：CPU核心数-1
 - 批量大小：50条记录/批次
 - 驱动池复用：减少浏览器启动开销
+
+#### Turbo版 (parallel_poi_crawler_turbo.py)
+- 高并发线程数：12核心机器可达48线程
+- Chrome驱动池：20个实例智能管理
+- 批量处理：25条记录/批次，平衡性能和IO
+- FIFO任务队列：确保公平处理
+- 线程本地统计：无锁竞争，高效并发
 
 ### 地址转换原理
 基于预建的东京地区映射数据库：
@@ -198,6 +241,15 @@ data/input/中央区_complete.csv
 3. **网络超时**
    - 检查网络连接稳定性
    - 考虑使用VPN（如访问受限）
+
+4. **Turbo版性能问题**
+   ```bash
+   # 如果系统资源不足，降低线程数
+   python parallel_poi_crawler_turbo.py --all --workers 16
+   
+   # 或者使用稳定的标准版
+   python parallel_poi_crawler.py --all
+   ```
 
 4. **数据格式错误**
    - 确保输入CSV包含必需列

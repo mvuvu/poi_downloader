@@ -17,7 +17,7 @@ import sys
 import json
 import argparse
 import threading
-from queue import Queue, Empty, LifoQueue
+from queue import Queue, Empty
 import signal
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -30,66 +30,54 @@ import gc
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
 from driver_action import click_on_more_button, scroll_poi_section
 
-# 全局锁和状态管理
-_global_stats_lock = Lock()
-_global_stats = {'success': 0, 'errors': 0, 'processing': 0}
+# 线程本地统计管理
+thread_local_stats = threading.local()
 
 class ChromeDriverPool:
     """Chrome驱动池管理器 - 线程安全"""
-    def __init__(self, max_drivers=24, max_usage_per_driver=40):
+    def __init__(self, max_drivers=20):
         self.max_drivers = max_drivers
-        self.max_usage_per_driver = max_usage_per_driver  # 12核心下降低单个驱动使用次数
         self.pool = deque()
-        self.usage_count = {}
         self.lock = RLock()
         self.total_created = 0
         
     def create_optimized_driver(self):
-        """创建高度优化的Chrome实例"""
+        """创建高性能稳定的Chrome实例"""
         options = webdriver.ChromeOptions()
         
-        # 极限性能配置
-        options.add_argument('--headless=new')  # 使用新的headless模式
+        # 高性能稳定配置
+        options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-software-rasterizer')
-        options.add_argument('--disable-features=VizDisplayCompositor')
         
-        # 网络和加载优化
-        options.add_argument('--aggressive-cache-discard')
+        # 网络和性能优化
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-default-apps')
+        options.add_argument('--disable-sync')
+        options.add_argument('--disable-translate')
+        options.add_argument('--no-first-run')
+        options.add_argument('--disable-popup-blocking')
         options.add_argument('--disable-background-networking')
         options.add_argument('--disable-background-timer-throttling')
         options.add_argument('--disable-renderer-backgrounding')
         options.add_argument('--disable-backgrounding-occluded-windows')
         options.add_argument('--disable-client-side-phishing-detection')
-        options.add_argument('--disable-default-apps')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-hang-monitor')
-        options.add_argument('--disable-popup-blocking')
-        options.add_argument('--disable-prompt-on-repost')
-        options.add_argument('--disable-sync')
-        options.add_argument('--disable-translate')
-        options.add_argument('--disable-web-resources')
-        options.add_argument('--metrics-recording-only')
-        options.add_argument('--no-first-run')
-        options.add_argument('--safebrowsing-disable-auto-update')
-        options.add_argument('--enable-automation')
-        options.add_argument('--password-store=basic')
-        options.add_argument('--use-mock-keychain')
         
         # 内存优化
         options.add_argument('--memory-pressure-off')
-        options.add_argument('--max_old_space_size=2048')
-        options.add_argument('--js-flags=--max-old-space-size=2048')
         
-        # 禁用所有可能的资源
+        # 禁用资源加载提高速度
         prefs = {
             'profile.default_content_setting_values': {
-                'cookies': 2, 'images': 2, 'plugins': 2, 'popups': 2,
-                'geolocation': 2, 'notifications': 2, 'media_stream': 2,
-            },
-            'profile.managed_default_content_settings': {'images': 2}
+                'images': 2,
+                'plugins': 2,
+                'popups': 2,
+                'geolocation': 2,
+                'notifications': 2,
+                'media_stream': 2,
+            }
         }
         options.add_experimental_option('prefs', prefs)
         options.page_load_strategy = 'eager'
@@ -103,7 +91,7 @@ class ChromeDriverPool:
 
         driver = webdriver.Chrome(service=service, options=options)
         driver.set_page_load_timeout(8)
-        driver.implicitly_wait(1)
+        driver.implicitly_wait(1.5)
         
         return driver
     
@@ -113,37 +101,22 @@ class ChromeDriverPool:
             # 尝试从池中获取可用的驱动
             while self.pool:
                 driver = self.pool.popleft()
-                driver_id = id(driver)
-                
-                # 检查使用次数
-                if self.usage_count.get(driver_id, 0) < self.max_usage_per_driver:
-                    try:
-                        # 健康检查
-                        driver.current_url
-                        self.usage_count[driver_id] = self.usage_count.get(driver_id, 0) + 1
-                        return driver
-                    except:
-                        # 驱动已损坏，尝试关闭
-                        try:
-                            driver.quit()
-                        except:
-                            pass
-                        self.usage_count.pop(driver_id, None)
-                else:
-                    # 使用次数超限，关闭驱动
+                try:
+                    # 简单的健康检查
+                    driver.window_handles
+                    return driver
+                except:
+                    # 驱动已损坏，尝试关闭
                     try:
                         driver.quit()
                     except:
                         pass
-                    self.usage_count.pop(driver_id, None)
             
             # 池中没有可用驱动，创建新的（如果未达到上限）
-            if len(self.usage_count) < self.max_drivers:
+            if self.total_created < self.max_drivers:
                 driver = self.create_optimized_driver()
-                driver_id = id(driver)
-                self.usage_count[driver_id] = 1
                 self.total_created += 1
-                print(f"创建新Chrome实例 #{self.total_created}，当前活跃: {len(self.usage_count)}")
+                print(f"创建新Chrome实例 #{self.total_created}")
                 return driver
             
             # 达到上限，等待其他线程释放驱动
@@ -155,25 +128,20 @@ class ChromeDriverPool:
             return
             
         with self.lock:
-            driver_id = id(driver)
-            if driver_id in self.usage_count:
-                try:
-                    # 清理浏览器状态
-                    driver.delete_all_cookies()
-                    driver.execute_script("window.localStorage.clear();")
-                    driver.execute_script("window.sessionStorage.clear();")
-                    # 强制垃圾回收
-                    driver.execute_script("if (window.gc) { window.gc(); }")
-                except:
-                    pass
-                
-                self.pool.append(driver)
-            else:
-                # 驱动已被标记为无效
+            try:
+                # 清理浏览器状态
+                driver.delete_all_cookies()
+                driver.execute_script("window.localStorage.clear();")
+                driver.execute_script("window.sessionStorage.clear();")
+            except:
+                # 清理失败，不归还到池中
                 try:
                     driver.quit()
                 except:
                     pass
+                return
+            
+            self.pool.append(driver)
     
     def cleanup_all(self):
         """清理所有驱动"""
@@ -186,17 +154,16 @@ class ChromeDriverPool:
                 except:
                     pass
             
-            self.usage_count.clear()
             print(f"Chrome驱动池已清理，共创建了 {self.total_created} 个实例")
 
 
 class TurboTaskScheduler:
     """Turbo任务调度器 - 高并发任务分发"""
-    def __init__(self, max_threads=72):
+    def __init__(self, max_threads=48):
         self.max_threads = max_threads
-        # 为12核心增大队列缓冲区
-        queue_size = max_threads * 15 if max_threads >= 64 else max_threads * 10
-        self.task_queue = LifoQueue(maxsize=queue_size)  # LIFO队列提高局部性
+        # 高效队列配置
+        queue_size = max_threads * 8
+        self.task_queue = Queue(maxsize=queue_size)  # FIFO队列确保公平处理
         self.result_queue = Queue()
         self.pending_tasks = deque()
         self.active_threads = 0
@@ -259,6 +226,7 @@ class TurboWorker(threading.Thread):
         self.crawler = crawler
         self.processed_count = 0
         self.current_driver = None
+        self.stats = {'success': 0, 'errors': 0}  # 线程本地统计
         
     def run(self):
         """线程主循环"""
@@ -290,12 +258,11 @@ class TurboWorker(threading.Thread):
                 self.task_scheduler.put_result(result)
                 self.processed_count += 1
                 
-                # 更新全局统计
-                with _global_stats_lock:
-                    if result['success']:
-                        _global_stats['success'] += 1
-                    else:
-                        _global_stats['errors'] += 1
+                # 更新线程本地统计
+                if result['success']:
+                    self.stats['success'] += 1
+                else:
+                    self.stats['errors'] += 1
                 
                 # 定期报告进度
                 if self.processed_count % 20 == 0:
@@ -312,8 +279,7 @@ class TurboWorker(threading.Thread):
                 }
                 self.task_scheduler.put_result(error_result)
                 
-                with _global_stats_lock:
-                    _global_stats['errors'] += 1
+                self.stats['errors'] += 1
                 
                 # Chrome可能有问题，释放并重新获取
                 if self.current_driver:
@@ -393,18 +359,18 @@ logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %
 
 class ParallelPOICrawler:
     def __init__(self, max_workers=None, output_dir="data/output", batch_size=50, enable_resume=True):
-        # 为12核心CPU优化并发数
+        # 科学的高性能配置
         cpu_count = mp.cpu_count()
         if max_workers is None:
             if cpu_count >= 12:
-                # 12核心或以上：使用CPU数量*6，最大72线程
-                self.max_workers = min(72, cpu_count * 6)
+                # 12核心以上：使用CPU数量*4，最多48线程
+                self.max_workers = min(48, cpu_count * 4)
             elif cpu_count >= 8:
-                # 8-11核心：使用CPU数量*5
-                self.max_workers = min(48, cpu_count * 5)
+                # 8-11核心：使用CPU数量*3
+                self.max_workers = min(36, cpu_count * 3)
             else:
-                # 8核心以下：使用CPU数量*4
-                self.max_workers = min(32, cpu_count * 4)
+                # 8核心以下：使用CPU数量*2
+                self.max_workers = min(24, cpu_count * 2)
         else:
             self.max_workers = max_workers
             
@@ -430,8 +396,8 @@ class ParallelPOICrawler:
         self.no_poi_batch_tracker = {}  # 跟踪每个批次的结果
         self.no_poi_tracker_lock = Lock()
         
-        # 为12核心优化Chrome驱动池大小
-        chrome_pool_size = min(24, max(12, self.max_workers // 3))  # 12核心用24个Chrome实例
+        # 高效Chrome驱动池配置
+        chrome_pool_size = min(20, max(8, self.max_workers // 2))
         
         # 初始化组件
         self.driver_pool = ChromeDriverPool(max_drivers=chrome_pool_size)
@@ -493,9 +459,8 @@ class ParallelPOICrawler:
                 except:
                     lat, lng = None, None
                 
-                # 安全地添加列
+                # 添加列信息
                 try:
-                    df = df.copy()  # 避免修改原始数据
                     df['blt_name'] = place_name
                     df['lat'] = lat
                     df['lng'] = lng
@@ -961,7 +926,7 @@ class ParallelPOICrawler:
         remaining_addresses = total_addresses - start_idx
         
         print(f"开始爬取 {district_name} {total_addresses} 个地址")
-        print(f"使用Turbo模式，{self.max_workers} 个高并发线程")
+        print(f"使用优化模式，{self.max_workers} 个并发线程")
         print(f"Chrome驱动池: {self.driver_pool.max_drivers} 个实例")
         print(f"输出文件: {self.output_file}\n")
         
@@ -1030,15 +995,15 @@ class ParallelPOICrawler:
                 # 跟踪no_poi结果，检测ikejiri等区域的大范围非建筑物情况
                 self._track_no_poi_result(result)
                 
-                # 批量写入
+                # 批量写入 - 平衡性能和IO
                 current_time = time.time()
-                if len(batch_data) >= 20 or (batch_data and (current_time - last_save_time) > 5):
+                if len(batch_data) >= 25 or (batch_data and (current_time - last_save_time) > 8):
                     self._batch_append_to_output_file(batch_data)
                     batch_data = []
                     last_save_time = current_time
                 
-                # 进度保存
-                if current_time - last_progress_save > 30:
+                # 进度保存 - 2分钟间隔
+                if current_time - last_progress_save > 120:
                     self._save_progress(district_name, start_idx + processed_count, total_addresses, 
                                       total_success + success_count, total_errors + error_count)
                     last_progress_save = current_time
@@ -1046,11 +1011,8 @@ class ParallelPOICrawler:
                 # 进度显示
                 if processed_count % 100 == 0:
                     progress_percent = ((start_idx + processed_count) / total_addresses) * 100
-                    with _global_stats_lock:
-                        global_success = _global_stats['success']
-                        global_errors = _global_stats['errors']
                     print(f"进度: {start_idx + processed_count}/{total_addresses} ({progress_percent:.1f}%) - "
-                          f"成功: {global_success}, 失败: {global_errors}")
+                          f"成功: {success_count}, 失败: {error_count}")
             
             # 写入剩余数据
             if batch_data:
@@ -1081,9 +1043,9 @@ class ParallelPOICrawler:
             # 清理资源
             self.driver_pool.cleanup_all()
         
-        with _global_stats_lock:
-            total_success = _global_stats['success']
-            total_errors = _global_stats['errors']
+        # 汇总所有worker的统计
+        total_success = final_success
+        total_errors = final_errors
         
         print(f"\n{district_name} 爬取完成！")
         print(f"总成功: {total_success}, 总失败: {total_errors}")
@@ -1164,7 +1126,7 @@ class ParallelPOICrawler:
             print(f"在 {input_dir} 目录中没有找到CSV文件")
             return
         
-        print(f"发现 {len(csv_files)} 个区文件，开始批量处理（Turbo模式）...\n")
+        print(f"发现 {len(csv_files)} 个区文件，开始批量处理（优化模式）...\n")
         
         all_success = 0
         all_errors = 0
@@ -1207,7 +1169,7 @@ class ParallelPOICrawler:
 
     def crawl_multiple_files(self, file_paths):
         """处理多个指定文件"""
-        print(f"准备处理 {len(file_paths)} 个文件（Turbo模式）...\n")
+        print(f"准备处理 {len(file_paths)} 个文件（优化模式）...\n")
         
         all_success = 0
         all_errors = 0
@@ -1247,13 +1209,13 @@ class ParallelPOICrawler:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='POI爬虫 - Turbo模式（极限CPU利用率）')
+    parser = argparse.ArgumentParser(description='POI爬虫 - 优化版本')
     parser.add_argument('input_files', nargs='*', help='输入CSV文件路径（可以指定多个）')
     parser.add_argument('--all', action='store_true', help='批量处理所有区文件')
     parser.add_argument('--pattern', type=str, help='使用通配符模式选择文件，如 "*区_complete*.csv"')
     parser.add_argument('--file-list', type=str, help='从文件中读取要处理的文件列表（每行一个文件路径）')
     parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
-    parser.add_argument('--workers', type=int, default=None, help='并发工作线程数（12核心默认：72线程）')
+    parser.add_argument('--workers', type=int, default=None, help='并发工作线程数（默认：CPU核心数×2）')
     parser.add_argument('--batch-size', type=int, default=150, help='批次大小')
     parser.add_argument('--status', action='store_true', help='查看未完成任务状态')
     parser.add_argument('--clean-progress', action='store_true', help='清理所有进度文件')
@@ -1290,13 +1252,12 @@ def main():
         print("  --status          查看未完成任务状态")
         print("  --clean-progress  清理所有进度文件")
         print("")
-        print("Turbo模式特性（12核心优化）:")
-        print("  - 超高并发线程数（12核心×6=72线程）")
-        print("  - 大型Chrome驱动池（24个实例）")
-        print("  - LIFO任务队列提高缓存局部性")
-        print("  - 异步任务调度和结果收集")
-        print("  - 实时性能监控和负载均衡")
-        print("  - 专为12+核心CPU优化的并发策略")
+        print("优化特性：")
+        print("  - 合理的并发线程数（CPU核心数×2）")
+        print("  - 稳定的Chrome驱动池管理")
+        print("  - FIFO任务队列确保公平处理")
+        print("  - 高效的资源利用和内存管理")
+        print("  - 完整的重试机制和错误处理")
         return
     
     # 创建爬虫实例
@@ -1307,7 +1268,7 @@ def main():
         enable_resume=enable_resume
     )
     
-    print(f"启动Turbo模式，使用 {crawler.max_workers} 个高并发线程")
+    print(f"启动优化模式，使用 {crawler.max_workers} 个并发线程")
     print(f"Chrome驱动池: {crawler.driver_pool.max_drivers} 个实例")
     
     # 收集要处理的文件列表

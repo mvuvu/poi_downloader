@@ -20,20 +20,28 @@ import argparse
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
 from driver_action import click_on_more_button, scroll_poi_section
 
+# 配置日志
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
+
 # 全局变量，用于在worker进程中缓存Chrome实例
+# 多进程环境下，每个进程都有独立的全局状态
 _worker_driver = None
+_worker_driver_created_at = None  # 跟踪创建时间，防止过久使用
 
 def _worker_cleanup():
     """Worker进程结束时的清理函数"""
-    global _worker_driver
+    global _worker_driver, _worker_driver_created_at
     if _worker_driver is not None:
         try:
             _worker_driver.quit()
             print(f"Worker进程结束，Chrome实例已关闭")
+        except Exception as e:
+            logging.error(f"关闭Chrome实例时出错: {e}")
         except:
-            pass
+            logging.error("关闭Chrome实例时出现未知错误")
         finally:
             _worker_driver = None
+            _worker_driver_created_at = None
 
 def worker_crawl_batch(crawler_instance, addresses_batch):
     """Worker进程的入口函数，确保异常时Chrome被清理"""
@@ -49,8 +57,10 @@ def worker_crawl_batch(crawler_instance, addresses_batch):
             try:
                 _worker_driver.execute_script("window.gc();")  # 强制垃圾回收
                 _worker_driver.delete_all_cookies()  # 清理cookies
+            except Exception as e:
+                logging.warning(f"Chrome缓存清理失败: {e}")
             except:
-                pass  # 忽略清理失败
+                logging.warning("Chrome缓存清理出现未知错误")
         
         return result
     except Exception as e:
@@ -74,6 +84,12 @@ class ParallelPOICrawler:
         self.progress_dir = Path("data/progress")
         self.progress_dir.mkdir(parents=True, exist_ok=True)
         self.progress_file = None
+        
+        # 警告记录系统（与Turbo版本保持一致）
+        self.warnings_dir = Path("data/warnings")
+        self.warnings_dir.mkdir(parents=True, exist_ok=True)
+        self.warnings_file = None
+        self.warning_batch = []
         
     def create_driver(self):
 
@@ -137,7 +153,7 @@ class ParallelPOICrawler:
     
     def _get_or_create_driver(self):
         """获取或创建Chrome驱动实例（进程级复用）"""
-        global _worker_driver
+        global _worker_driver, _worker_driver_created_at
         import os
         process_id = os.getpid()
         
@@ -145,20 +161,29 @@ class ParallelPOICrawler:
         if _worker_driver is None:
             print(f"进程 {process_id} 创建新的Chrome实例")
             _worker_driver = self.create_driver()
+            _worker_driver_created_at = time.time()
         else:
-            # 健康检查：确保Chrome实例仍然可用
-            try:
-                _worker_driver.current_url  # 简单的健康检查
-            except Exception as e:
-                print(f"进程 {process_id} Chrome实例异常，重新创建: {e}")
+            # 检查Chrome实例是否过旧（超过1小时重新创建）
+            if _worker_driver_created_at and (time.time() - _worker_driver_created_at) > 3600:
+                print(f"进程 {process_id} Chrome实例过旧，重新创建")
                 self._cleanup_driver()
                 _worker_driver = self.create_driver()
+                _worker_driver_created_at = time.time()
+            else:
+                # 健康检查：确保Chrome实例仍然可用
+                try:
+                    _worker_driver.current_url  # 简单的健康检查
+                except Exception as e:
+                    print(f"进程 {process_id} Chrome实例异常，重新创建: {e}")
+                    self._cleanup_driver()
+                    _worker_driver = self.create_driver()
+                    _worker_driver_created_at = time.time()
         
         return _worker_driver
     
     def _cleanup_driver(self):
         """清理当前进程的Chrome实例"""
-        global _worker_driver
+        global _worker_driver, _worker_driver_created_at
         import os
         process_id = os.getpid()
         
@@ -166,10 +191,11 @@ class ParallelPOICrawler:
             try:
                 _worker_driver.quit()
                 print(f"进程 {process_id} Chrome实例已关闭")
-            except:
-                pass
+            except Exception as e:
+                logging.error(f"进程 {process_id} 关闭Chrome实例失败: {e}")
             finally:
                 _worker_driver = None
+                _worker_driver_created_at = None
     
     def _cleanup_all_drivers(self):
         """清理所有Chrome实例（主进程调用）"""
@@ -226,7 +252,8 @@ class ParallelPOICrawler:
                     element = driver.find_element("xpath", xpath)
                     if element and element.text.strip():
                         return element.text.strip()
-                except:
+                except Exception as e:
+                    logging.debug(f"获取地点名称时跳过选择器: {e}")
                     continue
             
             # 方案3：从地址中提取建筑物名称
@@ -300,8 +327,44 @@ class ParallelPOICrawler:
         if self.progress_file and self.progress_file.exists():
             try:
                 self.progress_file.unlink()
-            except:
-                pass
+            except Exception as e:
+                logging.warning(f"删除进度文件失败: {e}")
+    
+    def _save_warning(self, warning_type, address, error_msg, worker_id=None):
+        """保存警告信息到文件（与Turbo版本保持一致）"""
+        warning_record = {
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'warning_type': warning_type,
+            'address': address[:100] if address else 'unknown',
+            'error_message': str(error_msg)[:200],
+            'worker_id': worker_id
+        }
+        self.warning_batch.append(warning_record)
+        
+        # 批量写入警告（每50条）
+        if len(self.warning_batch) >= 50:
+            self._flush_warnings()
+    
+    def _flush_warnings(self):
+        """批量写入警告到CSV文件"""
+        if not self.warning_batch or self.warnings_file is None:
+            return
+        
+        try:
+            import pandas as pd
+            warning_df = pd.DataFrame(self.warning_batch)
+            file_exists = self.warnings_file.exists()
+            warning_df.to_csv(
+                self.warnings_file, 
+                mode='a', 
+                header=not file_exists, 
+                index=False, 
+                encoding='utf-8-sig'
+            )
+            print(f"已保存 {len(self.warning_batch)} 条警告记录")
+            self.warning_batch.clear()
+        except Exception as e:
+            logging.error(f"警告文件写入失败: {e}")
     
     def list_pending_tasks(self):
         """列出所有未完成的任务"""
@@ -403,11 +466,11 @@ class ParallelPOICrawler:
                         # 确定错误类型
                         if isinstance(result, dict):
                             if result.get('poi_count', 0) == 0:
-                                error_msg = '未找到POI数据'
+                                error_msg = f"未找到POI数据 - 建筑物类型: {result.get('is_building', 'unknown')}"
                             else:
-                                error_msg = result.get('status', '未知错误')
+                                error_msg = f"处理失败 - 状态: {result.get('status', 'unknown')}"
                         else:
-                            error_msg = '处理异常'
+                            error_msg = f'处理异常 - 结果类型: {type(result).__name__}'
                             
                         batch_results.append({
                             'success': False,
@@ -421,7 +484,7 @@ class ParallelPOICrawler:
                 except Exception as e:
                     batch_results.append({
                         'success': False,
-                        'error': str(e),
+                        'error': f"地址处理异常: {str(e)[:100]}",
                         'address': current_address,
                         'worker_id': worker_id,
                         'index': idx
@@ -429,6 +492,7 @@ class ParallelPOICrawler:
                     
         except Exception as e:
             # 如果Chrome出现严重错误，重新创建实例
+            logging.error(f"Chrome实例严重错误，重新创建: {e}")
             print(f"Chrome实例出错，重新创建: {e}")
             self._cleanup_driver()
             # 不在这里重新创建，让下次调用时再创建
@@ -515,63 +579,6 @@ class ParallelPOICrawler:
                 'poi_count': 0,
                 'status': 'no_poi_data'
             }
-    ''' 
-    def _crawl_poi_info(self, address, driver):
-
-        url = f'https://www.google.com/maps/place/{address}'
-        driver.get(url)
-        
-        #place_type = get_building_type(driver)
-        #is_building = place_type == '建筑物'
-        #has_scrolled = False
-        poi_count = 0
-        #comment_count = 0
-        more_button = driver.find_elements('class name', 'M77dve')
-        
-        if more_button:
-            click_on_more_button(driver)
-            scroll_poi_section(driver)
-            #has_scrolled = True
-        
-        df = get_all_poi_info(driver)
-        
-
-            
-        if df is not None and not df.empty:
-            place_name = get_building_name(driver)
-            poi_count = len(df)
-            final_url = wait_for_coords_url(driver)
-
-            if final_url:
-                lat, lng = get_coords(final_url)
-            else:
-                print("❌ 没有拿到有效的坐标 URL")
-
-            df['blt_name'] = place_name
-            df['lat'] = lat
-            df['lng'] = lng
-            # comment_count已经在get_all_poi_info中为每个POI单独设置
-            
-            # 单地址完成总结
-            print(f"{address}  | POI: {poi_count}")
-
-            return {
-                'data': df,
-                'is_building': True,
-                'poi_count': poi_count,
-                'status': 'success'}
-        
-        else:
-        # 单地址完成总结
-            print(f"{address}  | POI: {poi_count}")
-            return {
-                'data': None,
-                'is_building': False,
-                'poi_count': 0,
-                'status': 'no_poi_data'
-                }
-        
-    '''
 
     def process_batch(self, addresses_batch, batch_id):
         success_count = 0
@@ -735,6 +742,9 @@ class ParallelPOICrawler:
         self.current_district_name = district_name  # 保存当前区域名称
         self.progress_file = self.progress_dir / f"{district_name}_progress.json"
         
+        # 设置警告文件
+        self.warnings_file = self.warnings_dir / f"{district_name}_warnings_{int(time.time())}.csv"
+        
         # 检查是否有未完成的进度
         progress_data = self._load_progress(district_name)
         start_batch_id = 0
@@ -797,6 +807,11 @@ class ParallelPOICrawler:
         
         # 最终去重处理
         self._final_deduplication()
+        
+        # 刷新剩余的警告信息
+        if self.warning_batch:
+            self._flush_warnings()
+            print(f"警告记录已保存到: {self.warnings_file}")
         
         # 清理进度文件和Chrome实例
         self._cleanup_progress()
