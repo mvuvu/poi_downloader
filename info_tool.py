@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import time
 import pandas as pd
 
-def wait_for_coords_url(driver, timeout=20):
+def wait_for_coords_url(driver, timeout=5):
     """等待跳转后的 Google Maps URL 出现 /@lat,lng 格式"""
     try:
         WebDriverWait(driver, timeout).until(lambda d: "/@" in d.current_url)
@@ -14,6 +14,34 @@ def wait_for_coords_url(driver, timeout=20):
         print("等待跳转失败：", e)
         return None
 
+
+
+def has_hotel_category(driver, address):
+    """检查是否是酒店类别页面"""
+    try:
+        # 检查酒店类别标题
+        selectors = [
+            "h2.kPvgOb.fontHeadlineSmall",
+            "div.aIiAFe h1",
+            "h1.jRccSf",
+            "h1.ZoUhNb"
+        ]
+        
+        for selector in selectors:
+            try:
+                elements = driver.find_elements("css selector", selector)
+                for element in elements:
+                    text = element.text.strip().lower()
+                    if any(keyword in text for keyword in ["酒店", "ホテル", "hotel", "lodging", "accommodation"]):
+                       
+                        print(f"🏨 检测到酒店页面: {text} | {address[:30]}...")
+                        return True
+            except:
+                continue
+                
+        return False
+    except:
+        return False
 
 def get_coords(http_url):
     target_substring = "/@"

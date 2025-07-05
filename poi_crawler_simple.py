@@ -21,7 +21,7 @@ import glob
 from concurrent.futures import ThreadPoolExecutor
 
 # 导入现有的POI提取函数
-from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
+from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url, has_hotel_category
 from driver_action import click_on_more_button, scroll_poi_section
 
 
@@ -182,6 +182,8 @@ class ChromeWorker(threading.Thread):
         """处理单个POI提取任务"""
         address = task['address']
         index = task['index']
+        original_address = task.get('original_address')
+        is_retry = task.get('is_retry', False)
         
         try:
             # 调用现有的POI提取逻辑
@@ -192,18 +194,26 @@ class ChromeWorker(threading.Thread):
                     'success': True,
                     'data': result.get('data'),
                     'address': address,
+                    'original_address': original_address,
                     'index': index,
                     'worker_id': self.worker_id,
                     'poi_count': result.get('poi_count', 0),
-                    'result_type': result.get('result_type', 'unknown')
+                    'result_type': result.get('result_type', 'unknown'),
+                    'is_building': result.get('is_building', False),
+                    'is_retry': is_retry
                 }
             else:
                 return {
                     'success': False,
                     'error': result.get('error_message', 'POI提取失败'),
                     'address': address,
+                    'original_address': original_address,
                     'index': index,
-                    'worker_id': self.worker_id
+                    'worker_id': self.worker_id,
+                    'poi_count': result.get('poi_count', 0),
+                    'result_type': result.get('result_type', 'unknown'),
+                    'is_building': result.get('is_building', False),
+                    'is_retry': is_retry
                 }
                 
         except Exception as e:
@@ -211,23 +221,32 @@ class ChromeWorker(threading.Thread):
                 'success': False,
                 'error': str(e),
                 'address': address,
+                'original_address': original_address,
                 'index': index,
-                'worker_id': self.worker_id
+                'worker_id': self.worker_id,
+                'poi_count': 0,
+                'result_type': 'exception_error',
+                'is_building': False,
+                'is_retry': is_retry
             }
     
     def crawl_poi_info(self, address):
         """POI信息爬取 - 基于现有代码简化版"""
         url = f'https://www.google.com/maps/place/{address}'
         
+        # 添加地址处理开始日志
+        if self.verbose:
+            print(f"🔍 处理地址: {address[:50]}{'...' if len(address) > 50 else ''}")
+        
         try:
             self.driver.get(url)
             
             # 快速检查酒店类别页面
-            if self.has_hotel_category(address):
+            if has_hotel_category(self.driver,address):
                 return {
                     'data': None,
                     'status': 'success',
-                    'result_type': 'hotel_category_page',
+                    'result_type': 'hotel_advertisement',
                     'poi_count': 0,
                     'is_building': False
                 }
@@ -258,19 +277,20 @@ class ChromeWorker(threading.Thread):
             
                 poi_count = len(df)
                 # 获取坐标
-                try:
-                    current_url = self.driver.current_url
-                    lat, lng = get_coords(current_url)
-                except Exception as e:
+                
+                final_url = wait_for_coords_url(self.driver)
+                if final_url:
+                    lat, lng = get_coords(final_url)
+                else:
                     lat, lng = None, None
+
                 
                 df['blt_name'] = place_name
                 df['lat'] = lat
                 df['lng'] = lng
                 
-                # 单地址完成总结
-                if self.verbose:
-                    print(f"{address[:30]}...  | POI: {poi_count} | 状态: 已保存")
+                # 单地址完成总结 - 始终显示成功处理的地址
+                print(f"✅ {address[:30]}{'...' if len(address) > 30 else ''}  | POI: {poi_count} | 状态: 已保存")
 
 
                 return {
@@ -286,8 +306,7 @@ class ChromeWorker(threading.Thread):
                 place_type = get_building_type(self.driver)
                 is_building = place_type == '建筑物' or place_type == '建造物'
                 if is_building:
-                    if self.verbose:
-                        print(f"{address[:30]}...  | 类型: {place_type} | POI: 0 | 非商业建筑")
+                    print(f"🏢 {address[:30]}{'...' if len(address) > 30 else ''}  | 类型: {place_type} | POI: 0 | 非商业建筑")
                     
                     return {
                         'data': None,
@@ -297,15 +316,17 @@ class ChromeWorker(threading.Thread):
                         'is_building': True
                     }
                 else:
+                    print(f"❌ {address[:30]}{'...' if len(address) > 30 else ''}  | 状态: 非建筑物")
                     return {
                         'data': None,
-                        'status': 'success',
+                        'status': 'failure',
                         'result_type': 'not_building',
                         'poi_count': 0,
                         'is_building': False
                     }
                 
         except TimeoutException:
+            print(f"⏰ {address[:30]}{'...' if len(address) > 30 else ''}  | 错误: 页面加载超时")
             return {
                 'data': None,
                 'status': 'error',
@@ -315,6 +336,7 @@ class ChromeWorker(threading.Thread):
                 'is_building': False
             }
         except Exception as e:
+            print(f"💥 {address[:30]}{'...' if len(address) > 30 else ''}  | 错误: {str(e)[:50]}")
             return {
                 'data': None,
                 'status': 'error',
@@ -323,33 +345,7 @@ class ChromeWorker(threading.Thread):
                 'poi_count': 0,
                 'is_building': False
             }
-    
-    def has_hotel_category(self, address):
-        """检查是否是酒店类别页面"""
-        try:
-            # 检查酒店类别标题
-            selectors = [
-                "h2.kPvgOb.fontHeadlineSmall",
-                "div.aIiAFe h1",
-                "h1.jRccSf",
-                "h1.ZoUhNb"
-            ]
-            
-            for selector in selectors:
-                try:
-                    elements = self.driver.find_elements("css selector", selector)
-                    for element in elements:
-                        text = element.text.strip().lower()
-                        if any(keyword in text for keyword in ["酒店", "ホテル", "hotel", "lodging", "accommodation"]):
-                            if self.verbose:
-                                print(f"🏨 检测到酒店页面: {text} | {address[:30]}...")
-                            return True
-                except:
-                    continue
-                    
-            return False
-        except:
-            return False
+
     
     
     def _get_fallback_location_name(self, driver, address):
@@ -476,11 +472,12 @@ class ResultBuffer:
 class SimplePOICrawler:
     """简化版POI爬虫 - 10个持久化Chrome工作线程"""
     
-    def __init__(self, num_workers=10, batch_size=50, flush_interval=30, verbose=False):
+    def __init__(self, num_workers=10, batch_size=50, flush_interval=30, verbose=False, enable_resume=True):
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.verbose = verbose
+        self.enable_resume = enable_resume
         
         # 任务和结果队列
         self.task_queue = queue.Queue()
@@ -492,6 +489,13 @@ class SimplePOICrawler:
         
         # 结果缓存池
         self.result_buffer = None
+        
+        # 断点续传支持
+        self.progress_dir = Path("data/progress")
+        self.progress_dir.mkdir(parents=True, exist_ok=True)
+        self.progress_file = None
+        self.processed_indices = set()  # 已处理的索引
+        self.current_file_name = None  # 当前处理的文件名
         
         # 统计信息
         self.total_tasks = 0
@@ -550,6 +554,8 @@ class SimplePOICrawler:
             for index, row in df.iterrows():
                 # 优先使用FormattedAddress，然后Address，最后ConvertedAddress
                 address = None
+                original_address = None
+                
                 if 'FormattedAddress' in df.columns and pd.notna(row['FormattedAddress']):
                     address = row['FormattedAddress'].strip()
                 elif 'Address' in df.columns and pd.notna(row['Address']):
@@ -557,9 +563,14 @@ class SimplePOICrawler:
                 elif 'ConvertedAddress' in df.columns and pd.notna(row['ConvertedAddress']):
                     address = row['ConvertedAddress'].strip()
                 
+                # 保存日文原始地址用于重试
+                if 'Address' in df.columns and pd.notna(row['Address']):
+                    original_address = row['Address']
+                
                 if address:
                     addresses.append({
                         'address': address,
+                        'original_address': original_address,
                         'index': index
                     })
             
@@ -569,6 +580,65 @@ class SimplePOICrawler:
         except Exception as e:
             print(f"❌ 加载CSV文件失败: {e}")
             return []
+    
+    def _extract_file_name(self, file_path):
+        """从文件路径提取文件名作为进度标识"""
+        return Path(file_path).stem
+    
+    def _save_progress(self):
+        """保存当前进度到JSON文件"""
+        if not self.enable_resume or not self.progress_file:
+            return
+        
+        try:
+            progress_data = {
+                'file_name': self.current_file_name,
+                'processed_indices': list(self.processed_indices),
+                'total_tasks': self.total_tasks,
+                'processed_tasks': self.processed_tasks,
+                'success_count': self.success_count,
+                'error_count': self.error_count,
+                'timestamp': time.time()
+            }
+            
+            with open(self.progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress_data, f, ensure_ascii=False, indent=2)
+                
+        except Exception as e:
+            print(f"⚠️  保存进度失败: {e}")
+    
+    def _load_progress(self, file_name):
+        """加载进度文件"""
+        if not self.enable_resume:
+            return None
+        
+        progress_file = self.progress_dir / f"{file_name}_simple_progress.json"
+        
+        if not progress_file.exists():
+            return None
+        
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                progress_data = json.load(f)
+            
+            # 检查是否是同一个文件的进度
+            if progress_data.get('file_name') == file_name:
+                return progress_data
+                
+        except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
+            print(f"⚠️  读取进度文件失败: {e}")
+        
+        return None
+    
+    def _cleanup_progress(self):
+        """清理进度文件"""
+        if self.progress_file and self.progress_file.exists():
+            try:
+                self.progress_file.unlink()
+                if self.verbose:
+                    print(f"🧹 进度文件已清理: {self.progress_file.name}")
+            except Exception as e:
+                print(f"⚠️  清理进度文件失败: {e}")
     
     def start_workers(self):
         """启动工作线程"""
@@ -609,29 +679,44 @@ class SimplePOICrawler:
                 # 添加到缓存池
                 self.result_buffer.add_result(result)
                 
+                # 记录已处理的索引（用于断点续传）
+                if 'index' in result and not result.get('is_retry', False):
+                    self.processed_indices.add(result['index'])
+                
                 # 更新统计
                 self.processed_tasks += 1
                 if result['success']:
                     self.success_count += 1
                 else:
                     self.error_count += 1
-                    # 检查是否需要使用日文地址重试
-                    if (not result.get('is_building', True) and 
-                        result.get('poi_count', 0) == 0 and 
-                        result.get('original_address') and 
-                        result['address'] != result['original_address']):
-                        
-                        # 使用日文地址重试
-                        if self.verbose:
-                            print(f"🔄 非建筑物且POI为0，使用日文地址重试: {result['original_address'][:30]}...")
-                        
-                        retry_task = {
-                            'address': result['original_address'],
-                            'index': result['index'],
-                            'original_address': result['original_address'],
-                            'is_retry': True
-                        }
-                        self.task_queue.put(retry_task)
+                
+                # 定期保存进度（每处理10个任务保存一次）
+                if self.processed_tasks % 10 == 0:
+                    self._save_progress()
+                
+                # 检查是否需要使用日文地址重试（针对成功但无POI的情况）
+                if (result['success'] and 
+                    result.get('result_type') == 'not_building' and  # 只对非建筑物进行重试
+                    result.get('original_address') and 
+                    result['address'] != result['original_address'] and
+                    not result.get('is_retry', False)):  # 避免重复重试
+                    
+                    # 使用日文地址重试
+                    print(f"🔄 非建筑物，使用日文地址重试: {result['original_address'][:30]}...")
+                    
+                    retry_task = {
+                        'address': result['original_address'],
+                        'index': result['index'],
+                        'original_address': result['original_address'],
+                        'is_retry': True
+                    }
+                    self.task_queue.put(retry_task)
+                    # 增加总任务数以包含重试任务
+                    self.total_tasks += 1
+                
+                # 调试：记录所有result_type的分布（只在verbose模式）
+                if self.verbose and self.processed_tasks % 50 == 0:
+                    print(f"📊 Result类型: {result.get('result_type', 'unknown')} | 重试: {result.get('is_retry', False)}")
                 
                 # 🔧 日志压缩 - 定期报告进度
                 if self.verbose or self.processed_tasks % 200 == 0:
@@ -648,14 +733,43 @@ class SimplePOICrawler:
                 continue
     
     def crawl_from_csv(self, input_file, output_file):
-        """从CSV文件爬取POI数据"""
+        """从CSV文件爬取POI数据 - 支持断点续传"""
+        # 设置当前文件信息
+        self.current_file_name = self._extract_file_name(input_file)
+        self.progress_file = self.progress_dir / f"{self.current_file_name}_simple_progress.json"
+        
+        # 检查是否有未完成的进度
+        progress_data = self._load_progress(self.current_file_name)
+        
         # 加载地址
         addresses = self.load_addresses_from_csv(input_file)
         if not addresses:
             print("❌ 没有有效地址可处理")
             return
         
-        self.total_tasks = len(addresses)
+        # 处理断点续传
+        if progress_data:
+            print(f"🔄 发现未完成的任务，从断点继续...")
+            print(f"📊 之前进度: {progress_data['processed_tasks']}/{progress_data['total_tasks']}")
+            
+            # 恢复已处理的索引
+            self.processed_indices = set(progress_data.get('processed_indices', []))
+            self.processed_tasks = progress_data.get('processed_tasks', 0)
+            self.success_count = progress_data.get('success_count', 0)
+            self.error_count = progress_data.get('error_count', 0)
+            
+            # 过滤出未处理的地址
+            remaining_addresses = [addr for addr in addresses if addr['index'] not in self.processed_indices]
+            print(f"📋 剩余未处理地址: {len(remaining_addresses)} 条")
+            
+            if not remaining_addresses:
+                print("✅ 所有地址已处理完成！")
+                self._cleanup_progress()
+                return
+                
+            addresses = remaining_addresses
+        
+        self.total_tasks = len(addresses) + self.processed_tasks  # 包含已处理的任务数
         
         # 初始化结果缓存池
         self.result_buffer = ResultBuffer(output_file, self.batch_size, self.flush_interval, self.verbose)
@@ -701,6 +815,10 @@ class SimplePOICrawler:
             # 最终刷新缓存
             if self.result_buffer:
                 self.result_buffer.final_flush()
+            
+            # 保存最终进度并清理
+            self._save_progress()
+            self._cleanup_progress()
             
             print(f"📁 结果已保存到: {output_file}")
     
@@ -835,7 +953,8 @@ def main():
         num_workers=args.workers,
         batch_size=args.batch_size,
         flush_interval=args.flush_interval,
-        verbose=args.verbose
+        verbose=args.verbose,
+        enable_resume=not args.no_resume
     )
     
     # 确定要处理的文件列表
