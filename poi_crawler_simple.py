@@ -243,10 +243,12 @@ class ChromeWorker(threading.Thread):
             
             # 快速检查酒店类别页面
             if has_hotel_category(self.driver,address):
+                if self.verbose:
+                    print(f"🏨 检测到酒店页面，跳过处理: {address[:50]}")
                 return {
                     'data': None,
                     'status': 'success',
-                    'result_type': 'hotel_advertisement',
+                    'result_type': 'hotel_category_page',
                     'poi_count': 0,
                     'is_building': False
                 }
@@ -319,7 +321,7 @@ class ChromeWorker(threading.Thread):
                     print(f"❌ {address[:30]}{'...' if len(address) > 30 else ''}  | 状态: 非建筑物")
                     return {
                         'data': None,
-                        'status': 'failure',
+                        'status': 'success',  # 改为success，这样才能触发重试
                         'result_type': 'not_building',
                         'poi_count': 0,
                         'is_building': False

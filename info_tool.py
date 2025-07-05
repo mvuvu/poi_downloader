@@ -17,27 +17,21 @@ def wait_for_coords_url(driver, timeout=5):
 
 
 def has_hotel_category(driver, address):
-    """检查是否是酒店类别页面"""
+    """检查是否是酒店类别页面 - 精确检查酒店类别标题元素"""
     try:
-        # 检查酒店类别标题
-        selectors = [
-            "h2.kPvgOb.fontHeadlineSmall",
-            "div.aIiAFe h1",
-            "h1.jRccSf",
-            "h1.ZoUhNb"
-        ]
+        # 精确检查酒店类别标题元素
+        hotel_selector = "h2.kPvgOb.fontHeadlineSmall"
         
-        for selector in selectors:
-            try:
-                elements = driver.find_elements("css selector", selector)
-                for element in elements:
-                    text = element.text.strip().lower()
-                    if any(keyword in text for keyword in ["酒店", "ホテル", "hotel", "lodging", "accommodation"]):
-                       
-                        print(f"🏨 检测到酒店页面: {text} | {address[:30]}...")
-                        return True
-            except:
-                continue
+        try:
+            elements = driver.find_elements("css selector", hotel_selector)
+            for element in elements:
+                text = element.text.strip()
+                # 检查是否为酒店类别标题
+                if text in ["酒店", "ホテル", "Hotels"]:
+                    print(f"🏨 检测到酒店页面: {text} | {address[:30]}...")
+                    return True
+        except:
+            pass
                 
         return False
     except:

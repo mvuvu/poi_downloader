@@ -16,6 +16,13 @@
 - 🎯 **最佳实践配置**：12核心机器36线程，27个Chrome实例
 - 📊 **多进程数据处理**：CPU密集型任务独立进程，避免GIL限制
 
+### Simple 版 (poi_crawler_simple.py)
+- ⚡ **轻量化设计**：单进程多线程架构，简单高效
+- 🔧 **易于调试**：简化的代码结构，便于问题定位和修改
+- 🎯 **核心功能**：完整的POI爬取功能，支持断点续传和重试机制
+- 💾 **断点续传**：完善的进度管理，支持中断后继续爬取
+- 🔄 **智能重试**：非建筑物自动使用日文地址重试
+
 ## 特性
 
 ### 核心功能
@@ -67,6 +74,9 @@ python parallel_poi_crawler.py --all
 
 # 3b. 使用Turbo版（高性能）
 python parallel_poi_crawler_turbo.py --all
+
+# 3c. 使用Simple版（轻量测试）
+python poi_crawler_simple.py --all
 ```
 
 ## 详细使用说明
@@ -84,6 +94,7 @@ python parallel_poi_crawler_turbo.py --all
 # 处理单个文件
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
 python parallel_poi_crawler_turbo.py data/input/千代田区_complete.csv
+python poi_crawler_simple.py data/input/千代田区_complete.csv
 
 # 查看爬取进度和状态
 python parallel_poi_crawler.py --status
@@ -114,14 +125,22 @@ python parallel_poi_crawler.py --all --workers 4
 # Turbo版 - 自定义线程数（默认：CPU核心数×3，推荐配置）
 python parallel_poi_crawler_turbo.py --all --workers 36
 
+# Simple版 - 自定义工作线程数（默认：10）
+python poi_crawler_simple.py --all --workers 5
+
 # 异步模式（默认且唯一模式）
 python parallel_poi_crawler_turbo.py --all
 
 # 禁用断点续传
 python parallel_poi_crawler.py --pattern "*.csv" --no-resume
+python poi_crawler_simple.py --pattern "*.csv" --no-resume
 
 # 自定义批次大小
 python parallel_poi_crawler.py --all --batch-size 100
+python poi_crawler_simple.py --all --batch-size 25
+
+# Simple版详细日志
+python poi_crawler_simple.py --all --verbose
 ```
 
 ### 地址转换
@@ -169,14 +188,14 @@ python address_converter.py --regenerate
 ```
 poi_crawler/
 ├── parallel_poi_crawler.py        # 主程序 - 多进程稳定版
-├── parallel_poi_crawler_turbo.py  # Turbo版 - 高性能多线程版
+├── parallel_poi_crawler_turbo.py  # Turbo版 - 高性能多线程版  
+├── poi_crawler_simple.py          # Simple版 - 轻量化调试版
 ├── address_converter.py           # 地址转换工具
 ├── info_tool.py                  # POI信息提取模块
 ├── driver_action.py              # 浏览器自动化操作
 ├── requirements.txt              # Python依赖列表
 ├── CLAUDE.md                    # 开发指南
 ├── README.md                    # 项目说明
-├── TURBO_FIXES.md               # Turbo版优化记录
 └── data/                        # 数据目录
     ├── input/                  # 爬取输入文件目录
     ├── output/                 # POI输出结果目录
@@ -213,6 +232,15 @@ poi_crawler/
 - **FIFO任务队列**：确保公平处理
 - **线程本地统计**：无锁竞争，高效并发
 
+#### Simple版 (poi_crawler_simple.py)
+- **单进程多线程**：10个持久化Chrome工作线程
+- **批量大小**：50条记录/批次（可调节）
+- **断点续传**：完善的进度管理和恢复机制
+- **智能重试**：非建筑物自动使用日文地址重试
+- **酒店页面过滤**：自动识别并跳过酒店分类页面
+- **内存优化**：定期清理浏览器缓存，防止内存泄漏
+- **调试友好**：详细的日志输出，便于问题定位
+
 ### 地址转换原理
 基于预建的东京地区映射数据库：
 - 区名映射：日文区名→英文区名
@@ -245,6 +273,9 @@ data/input/中央区_complete.csv
    ```bash
    # 减少工作进程数
    python parallel_poi_crawler.py --all --workers 2
+   
+   # 使用轻量级Simple版
+   python poi_crawler_simple.py --all --workers 3
    ```
 
 3. **网络超时**
@@ -256,18 +287,51 @@ data/input/中央区_complete.csv
    # 如果系统资源不足，降低线程数
    python parallel_poi_crawler_turbo.py --all --workers 24
    
-# 异步模式现在是默认且唯一的模式，无需额外参数
+   # 异步模式现在是默认且唯一的模式，无需额外参数
    
    # 或者使用稳定的标准版
    python parallel_poi_crawler.py --all
+   
+   # 或者使用轻量化Simple版进行调试
+   python poi_crawler_simple.py --all --verbose
    ```
 
-4. **数据格式错误**
+5. **调试和开发问题**
+   ```bash
+   # 使用Simple版的详细日志
+   python poi_crawler_simple.py data/input/测试文件.csv --verbose --workers 1
+   
+   # 禁用断点续传进行全新测试
+   python poi_crawler_simple.py data/input/测试文件.csv --no-resume
+   ```
+
+6. **数据格式错误**
    - 确保输入CSV包含必需列
    - 检查坐标格式是否为小数
 
 ### 日志查看
 程序运行日志会显示错误信息，注意查看控制台输出。
+
+## 版本选择建议
+
+### 何时使用标准版 (parallel_poi_crawler.py)
+- **生产环境**：需要稳定性和可靠性
+- **大批量任务**：处理成千上万的地址数据
+- **资源受限环境**：内存或CPU资源有限的服务器
+- **长期运行**：需要24/7不间断运行的任务
+
+### 何时使用Turbo版 (parallel_poi_crawler_turbo.py)
+- **高性能需求**：追求最大处理速度
+- **资源充足环境**：16GB+内存，8+核心CPU
+- **大规模数据处理**：处理整个东京地区的数据
+- **时间敏感任务**：需要快速完成的紧急项目
+
+### 何时使用Simple版 (poi_crawler_simple.py)
+- **开发和测试**：代码调试和功能验证
+- **小规模数据**：处理几百到几千条地址
+- **学习和研究**：理解POI爬取机制
+- **问题排查**：当其他版本出现问题时用于定位
+- **资源极度受限**：内存少于8GB的环境
 
 ## 注意事项
 
