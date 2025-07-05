@@ -34,7 +34,9 @@
       "Bash(export:*)",
       "Bash(timeout:*)",
       "Bash(google-chrome:*)",
-      "Bash(chromium:*)"
+      "Bash(chromium:*)",
+      "Bash(nproc)",
+      "Bash(touch:*)"
     ],
     "deny": []
   }

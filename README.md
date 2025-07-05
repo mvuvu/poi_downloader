@@ -10,24 +10,27 @@
 - 推荐日常使用
 
 ### Turbo 版 (parallel_poi_crawler_turbo.py)
-- 高性能多线程架构，适合高配置机器
-- 科学的并发配置：12核心机器可达48线程
-- 高效Chrome驱动池管理和资源复用
-- 适合大量数据爬取任务
+- 🚀 **异步混合架构**：协程 + 多线程 + 多进程的高性能设计
+- 🧠 **动态资源调度**：智能CPU/内存监控，自动负载均衡
+- 🔄 **无锁高并发**：线程本地存储，避免锁竞争
+- 🎯 **最佳实践配置**：12核心机器36线程，27个Chrome实例
+- 📊 **多进程数据处理**：CPU密集型任务独立进程，避免GIL限制
 
 ## 特性
 
 ### 核心功能
-- **多线程/多进程并行爬取** - 支持多核CPU充分利用，提高爬取效率
-- **Chrome驱动池管理** - 智能复用Chrome实例，减少启动开销
+- **异步并行爬取** - 协程 + 多线程混合架构，IO密集型任务高效处理
+- **智能Chrome驱动池** - 生命周期管理，自动故障恢复和内存控制
 - **断点续传** - 进度自动保存，支持中断后继续爬取
 - **智能地址转换** - 日文地址自动转换为标准英文格式
+- **多进程数据处理** - CPU密集型DataFrame操作独立进程运行
 
 ### 数据质量保障
 - **自动去重** - 批次级和文件级双重去重机制
 - **智能重试** - 支持primary→secondary→fallback三层重试
 - **酒店页面过滤** - 自动跳过酒店分类页面，避免无效数据
 - **错误监控和警告** - 完善的错误日志和警告系统
+- **动态资源感知** - 实时监控内存/CPU使用，自动调节并发级别
 
 ### 操作便利性
 - **灵活文件选择** - 支持多文件、通配符、文件列表等多种选择方式
@@ -75,7 +78,7 @@ python parallel_poi_crawler_turbo.py --all
 # 标准版 - 处理所有区域文件
 python parallel_poi_crawler.py --all
 
-# Turbo版 - 高性能处理
+# Turbo版 - 异步高性能处理
 python parallel_poi_crawler_turbo.py --all
 
 # 处理单个文件
@@ -108,8 +111,11 @@ python parallel_poi_crawler.py file1.csv --pattern "*_complete*.csv" --file-list
 # 标准版 - 使用自定义工作进程数
 python parallel_poi_crawler.py --all --workers 4
 
-# Turbo版 - 自定义线程数（默认：CPU核心数×4）
-python parallel_poi_crawler_turbo.py --all --workers 24
+# Turbo版 - 自定义线程数（默认：CPU核心数×3，推荐配置）
+python parallel_poi_crawler_turbo.py --all --workers 36
+
+# 异步模式（默认且唯一模式）
+python parallel_poi_crawler_turbo.py --all
 
 # 禁用断点续传
 python parallel_poi_crawler.py --pattern "*.csv" --no-resume
@@ -198,11 +204,14 @@ poi_crawler/
 - 驱动池复用：减少浏览器启动开销
 
 #### Turbo版 (parallel_poi_crawler_turbo.py)
-- 高并发线程数：12核心机器可达48线程
-- Chrome驱动池：20个实例智能管理
-- 批量处理：25条记录/批次，平衡性能和IO
-- FIFO任务队列：确保公平处理
-- 线程本地统计：无锁竞争，高效并发
+- **异步混合架构**：协程 + ThreadPoolExecutor + multiprocessing
+- **最佳实践配置**：36线程 + 27个Chrome实例（12核心推荐）
+- **智能并发控制**：信号量限制同时任务数（25个）
+- **多进程数据处理**：DataFrame操作独立进程，避免GIL
+- **动态资源调度**：实时监控CPU/内存，自动负载均衡
+- **内存优化**：Chrome实例350MB限制，总内存约10.5GB
+- **FIFO任务队列**：确保公平处理
+- **线程本地统计**：无锁竞争，高效并发
 
 ### 地址转换原理
 基于预建的东京地区映射数据库：
@@ -245,7 +254,9 @@ data/input/中央区_complete.csv
 4. **Turbo版性能问题**
    ```bash
    # 如果系统资源不足，降低线程数
-   python parallel_poi_crawler_turbo.py --all --workers 16
+   python parallel_poi_crawler_turbo.py --all --workers 24
+   
+# 异步模式现在是默认且唯一的模式，无需额外参数
    
    # 或者使用稳定的标准版
    python parallel_poi_crawler.py --all
@@ -265,6 +276,46 @@ data/input/中央区_complete.csv
 - 遵守Google Maps服务条款，合理控制请求频率
 - 建议在非高峰时段运行大批量任务
 
+## 架构设计
+
+### Turbo版异步架构
+
+```
+📋 主控制器
+├── 🔄 AsyncCrawlWrapper (协程调度层)
+│   ├── ThreadPoolExecutor (IO密集型任务)
+│   └── Semaphore (并发控制)
+├── 🚗 ChromeDriverPool (驱动池管理)
+│   ├── 生命周期管理
+│   └── 故障恢复
+├── 💾 DataSaveWorker (多进程数据处理)
+│   ├── 独立进程运行
+│   └── 避免GIL限制
+└── 📊 DynamicResourceScheduler (动态调度)
+    ├── CPU监控
+    ├── 内存监控
+    └── 自动负载均衡
+```
+
+### 配置参数（12核心32GB系统）
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| max_workers | 36 | CPU核心数 × 3 |
+| max_drivers | 27 | 线程数 × 0.75 |
+| max_concurrent_tasks | 25 | 信号量限制 |
+| batch_size | 125 | 批处理大小 |
+| chrome_memory_limit | 350MB | 单实例内存限制 |
+| progress_interval | 5分钟 | 进度保存间隔 |
+
+### 性能特点
+
+- **CPU使用率**：充分利用多核（从20%提升到80%+）
+- **内存管理**：严格控制Chrome实例数量和内存使用
+- **并发模型**：IO密集型协程 + CPU密集型多进程
+- **容错机制**：自动故障恢复和资源重分配
+
 ## 开发指南
 
 参考 `CLAUDE.md` 文件了解代码架构和开发规范。
+参考 `TURBO_FIXES.md` 文件了解Turbo版优化历程。

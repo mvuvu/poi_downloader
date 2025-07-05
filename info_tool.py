@@ -5,13 +5,13 @@ from bs4 import BeautifulSoup
 import time
 import pandas as pd
 
-def wait_for_coords_url(driver, timeout=5):
+def wait_for_coords_url(driver, timeout=20):
     """等待跳转后的 Google Maps URL 出现 /@lat,lng 格式"""
     try:
         WebDriverWait(driver, timeout).until(lambda d: "/@" in d.current_url)
         return driver.current_url
     except Exception as e:
-        print("❌ 等待跳转失败：", e)
+        print("等待跳转失败：", e)
         return None
 
 
