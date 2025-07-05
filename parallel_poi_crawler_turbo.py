@@ -419,8 +419,8 @@ class ParallelPOICrawler:
                     'status': 'hotel_category_page_skipped'
                 }
             
-            # 快速等待页面加载
-            WebDriverWait(driver, 3).until(
+            # 恢复充足等待时间确保页面完全加载
+            WebDriverWait(driver, 5).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
             

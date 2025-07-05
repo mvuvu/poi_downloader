@@ -37,8 +37,8 @@ def get_coords(http_url):
 def get_building_type(driver):
     try:
         place_type_XPATH = '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[2]/div/div[2]/span/span/span'
-        # 减少等待时间，从3秒改为1秒
-        WebDriverWait(driver, 1).until(EC.presence_of_element_located((By.XPATH, place_type_XPATH)))
+        # 恢复充足等待时间确保元素加载完成
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, place_type_XPATH)))
         place_type = driver.find_element(By.XPATH, place_type_XPATH).text
     except:
         place_type = 'nan'
@@ -49,13 +49,14 @@ def get_building_type(driver):
 
 # 取得poi名稱
 def get_building_name(driver):
-    # 尝试多个可能的XPath，优化速度（因为现在在展开按钮前获取，页面更稳定）
+    # 回到老版本简单可靠的策略
+    place_name_XPATH = '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[1]/h1'
     xpath_candidates = [
-        ('//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[1]/h1', 5),  # 主要XPath，5秒足够
-        ('//h1[@data-value]', 2),
-        ('//h1[contains(@class, "x3AX1")]', 2),
-        ('//div[@data-value]//h1', 1),
-        ('//span[@data-value]', 1)
+        (place_name_XPATH, 10),  # 主要XPath，使用老版本的充足等待时间
+        ('//h1[@data-value]', 5),
+        ('//h1[contains(@class, "x3AX1")]', 5),
+        ('//div[@data-value]//h1', 3),
+        ('//span[@data-value]', 3)
     ]
     
     for xpath, timeout in xpath_candidates:
