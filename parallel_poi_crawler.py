@@ -20,6 +20,44 @@ import argparse
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url
 from driver_action import click_on_more_button, scroll_poi_section
 
+# 全局变量，用于在worker进程中缓存Chrome实例
+_worker_driver = None
+
+def _worker_cleanup():
+    """Worker进程结束时的清理函数"""
+    global _worker_driver
+    if _worker_driver is not None:
+        try:
+            _worker_driver.quit()
+            print(f"Worker进程结束，Chrome实例已关闭")
+        except:
+            pass
+        finally:
+            _worker_driver = None
+
+def worker_crawl_batch(crawler_instance, addresses_batch):
+    """Worker进程的入口函数，确保异常时Chrome被清理"""
+    import atexit
+    atexit.register(_worker_cleanup)
+    
+    try:
+        result = crawler_instance.crawl_batch_addresses(addresses_batch)
+        
+        # 处理完一批地址后，清理Chrome缓存以防内存泄漏
+        global _worker_driver
+        if _worker_driver is not None:
+            try:
+                _worker_driver.execute_script("window.gc();")  # 强制垃圾回收
+                _worker_driver.delete_all_cookies()  # 清理cookies
+            except:
+                pass  # 忽略清理失败
+        
+        return result
+    except Exception as e:
+        print(f"Worker进程异常: {e}")
+        _worker_cleanup()
+        raise
+
 
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -75,6 +113,17 @@ class ParallelPOICrawler:
         # 实验性选项
         options.add_experimental_option('excludeSwitches', ['enable-logging', 'enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
+        
+        # 禁用语音识别和AI功能，避免TensorFlow加载
+        options.add_argument('--disable-speech-api')
+        options.add_argument('--disable-features=AudioServiceOutOfProcess,TranslateUI')
+        options.add_argument('--disable-background-media-suspend')
+        options.add_experimental_option('prefs', {
+            'profile.default_content_setting_values.media_stream_mic': 2,
+            'profile.default_content_setting_values.media_stream_camera': 2,
+            'profile.default_content_setting_values.geolocation': 2,
+            'profile.default_content_setting_values.notifications': 2
+        })
     
         # 完全静默Service
         service = Service(
@@ -85,6 +134,131 @@ class ParallelPOICrawler:
 
         
         return webdriver.Chrome(service=service, options=options)
+    
+    def _get_or_create_driver(self):
+        """获取或创建Chrome驱动实例（进程级复用）"""
+        global _worker_driver
+        import os
+        process_id = os.getpid()
+        
+        # 检查当前进程是否已有驱动实例
+        if _worker_driver is None:
+            print(f"进程 {process_id} 创建新的Chrome实例")
+            _worker_driver = self.create_driver()
+        else:
+            # 健康检查：确保Chrome实例仍然可用
+            try:
+                _worker_driver.current_url  # 简单的健康检查
+            except Exception as e:
+                print(f"进程 {process_id} Chrome实例异常，重新创建: {e}")
+                self._cleanup_driver()
+                _worker_driver = self.create_driver()
+        
+        return _worker_driver
+    
+    def _cleanup_driver(self):
+        """清理当前进程的Chrome实例"""
+        global _worker_driver
+        import os
+        process_id = os.getpid()
+        
+        if _worker_driver is not None:
+            try:
+                _worker_driver.quit()
+                print(f"进程 {process_id} Chrome实例已关闭")
+            except:
+                pass
+            finally:
+                _worker_driver = None
+    
+    def _cleanup_all_drivers(self):
+        """清理所有Chrome实例（主进程调用）"""
+        # 主进程只需要清理自己的driver（如果有的话）
+        self._cleanup_driver()
+        print("Chrome实例清理完成")
+    
+    def _final_deduplication(self):
+        """最终去重处理，清理整个文件中的重复数据"""
+        if self.output_file is None or not self.output_file.exists():
+            return
+            
+        try:
+            print("正在进行最终去重处理...")
+            # 读取所有数据
+            df = pd.read_csv(self.output_file, encoding='utf-8-sig')
+            original_count = len(df)
+            
+            # 基于name, lat, lng组合去重
+            df_deduped = df.drop_duplicates(subset=['name', 'lat', 'lng'], keep='first')
+            final_count = len(df_deduped)
+            
+            # 如果有重复数据，重写文件
+            if original_count > final_count:
+                df_deduped.to_csv(self.output_file, index=False, encoding='utf-8-sig')
+                print(f"去重完成: {original_count} → {final_count} (删除了 {original_count - final_count} 个重复项)")
+            else:
+                print("未发现重复数据")
+                
+        except Exception as e:
+            print(f"去重处理失败: {e}")
+    
+    def _get_fallback_location_name(self, driver, address):
+        """获取地点名称的备用方案"""
+        try:
+            # 方案1：尝试从页面标题获取
+            title = driver.title
+            if title and title != "Google Maps" and "Google" not in title:
+                # 清理标题，移除 " - Google Maps" 等后缀
+                clean_title = title.replace(" - Google Maps", "").replace(" - Google 地图", "").strip()
+                if clean_title:
+                    return clean_title
+            
+            # 方案2：尝试其他可能的XPath
+            alternative_xpaths = [
+                "//h1[@data-value]",
+                "//h1[contains(@class, 'x3AX1')]", 
+                "//span[@data-value]",
+                "//div[@data-value]"
+            ]
+            
+            for xpath in alternative_xpaths:
+                try:
+                    element = driver.find_element("xpath", xpath)
+                    if element and element.text.strip():
+                        return element.text.strip()
+                except:
+                    continue
+            
+            # 方案3：从地址中提取建筑物名称
+            if "，" in address:
+                parts = address.split("，")
+                if len(parts) > 1:
+                    return parts[-1].strip()
+            
+            return None
+            
+        except Exception as e:
+            return None
+    
+    def _has_category_header(self, driver):
+        """检查页面是否有酒店类别标题"""
+        try:
+            # 查找 h2.kPvgOb.fontHeadlineSmall 元素
+            category_headers = driver.find_elements("css selector", "h2.kPvgOb.fontHeadlineSmall")
+            
+            # 检查是否有"酒店"标题
+            if category_headers:
+                for header in category_headers:
+                    category_text = header.text.strip()
+                    if category_text == "酒店":
+                        return True
+                
+            return False
+            
+        except Exception as e:
+            # 出错时返回False，继续正常处理
+            return False
+    
 
     def _save_progress(self, district_name, completed_batches, total_batches, total_success, total_errors):
         """保存进度到JSON文件"""
@@ -180,13 +354,11 @@ class ParallelPOICrawler:
         print(f"共清理了 {len(progress_files)} 个进度文件")
 
     def crawl_batch_addresses(self, addresses_batch):
-        """批量处理多个地址，实现三级重试机制"""
+        """批量处理多个地址，使用Chrome复用池优化性能"""
         batch_results = []
-        driver = None
+        driver = self._get_or_create_driver()
         
         try:
-            driver = self.create_driver()
-            
             for worker_id, address_obj, idx in addresses_batch:
                 try:
                     # 获取当前使用的地址和重试状态
@@ -198,10 +370,11 @@ class ParallelPOICrawler:
                     result = self._crawl_poi_info(current_address, driver)
                     
                     # 检查是否需要第二次重试（用日文地址）
-                    # 条件：第一次不是建筑物且POI数量为0
+                    # 条件：第一次不是建筑物且POI数量为0，且不是类别页面
                     should_retry_secondary = (isinstance(result, dict) and 
                                             not result.get('is_building', False) and
-                                            result.get('poi_count', 0) == 0)
+                                            result.get('poi_count', 0) == 0 and
+                                            result.get('status') != 'hotel_category_page_skipped')
                     
                     if should_retry_secondary and isinstance(address_obj, dict) and address_obj.get('secondary'):
                         retry_result = self._crawl_poi_info(address_obj['secondary'], driver, check_building_type=False)
@@ -254,12 +427,11 @@ class ParallelPOICrawler:
                         'index': idx
                     })
                     
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except:
-                    pass
+        except Exception as e:
+            # 如果Chrome出现严重错误，重新创建实例
+            print(f"Chrome实例出错，重新创建: {e}")
+            self._cleanup_driver()
+            # 不在这里重新创建，让下次调用时再创建
                     
         return batch_results
 
@@ -273,9 +445,28 @@ class ParallelPOICrawler:
         url = f'https://www.google.com/maps/place/{address}'
         driver.get(url)
         
+        # 检查是否是酒店类别页面，如果是则跳过
+        if self._has_category_header(driver):
+            print(f"{address}  | 类型: 酒店分类页面 | 状态: 已跳过（不下载）")
+            return {
+                'data': None,
+                'is_building': False,
+                'poi_count': 0,
+                'status': 'hotel_category_page_skipped'
+            }
+        
         poi_count = 0
         place_type = 'unknown'
         is_building = False
+        
+        # 先获取地点名称（在点击展开按钮之前）
+        try:
+            place_name = get_building_name(driver)
+        except Exception as e:
+            # 尝试备用方案获取地点名称
+            place_name = self._get_fallback_location_name(driver, address)
+            if not place_name:
+                place_name = 'Unknown Location'
         
         # 尝试点击更多按钮以展开POI列表
         more_button = driver.find_elements('class name', 'M77dve')
@@ -287,11 +478,6 @@ class ParallelPOICrawler:
         df = get_all_poi_info(driver)
         
         if df is not None and not df.empty:
-            # 获取地点名称（可能是建筑物名称或其他地点名称）
-            try:
-                place_name = get_building_name(driver)
-            except:
-                place_name = 'Unknown Location'
             
             poi_count = len(df)
             final_url = wait_for_coords_url(driver)
@@ -392,8 +578,8 @@ class ParallelPOICrawler:
         error_count = 0
         
         # 将地址分组，每个进程处理更多地址以减少Chrome启动开销
-        # 确保每个worker至少处理10个地址，避免Chrome启动开销过大
-        min_addresses_per_worker = 10
+        # 确保每个worker至少处理15个地址，平衡内存和效率
+        min_addresses_per_worker = 15
         addresses_per_worker = max(min_addresses_per_worker, len(addresses_batch) // self.max_workers)
         worker_batches = []
         
@@ -408,7 +594,7 @@ class ParallelPOICrawler:
         # 使用异步方式提交任务，不等待单个任务完成
         with ProcessPoolExecutor(max_workers=min(self.max_workers, len(worker_batches))) as executor:
             future_to_batch = {
-                executor.submit(self.crawl_batch_addresses, batch): batch 
+                executor.submit(worker_crawl_batch, self, batch): batch 
                 for batch in worker_batches
             }
             
@@ -490,9 +676,15 @@ class ParallelPOICrawler:
         if self.output_file is None or not data_list:
             return
             
-        # 合并所有DataFrame然后一次性写入
+        # 合并所有DataFrame
         combined_df = pd.concat(data_list, ignore_index=True)
-        combined_df.to_csv(self.output_file, mode='a', header=False, index=False, encoding='utf-8-sig')
+        
+        # 去重：基于name, lat, lng组合去重，保留第一次出现的记录
+        combined_df = combined_df.drop_duplicates(subset=['name', 'lat', 'lng'], keep='first')
+        
+        # 如果去重后还有数据，才写入
+        if not combined_df.empty:
+            combined_df.to_csv(self.output_file, mode='a', header=False, index=False, encoding='utf-8-sig')
 
     def _extract_district_name(self, input_file):
         """从输入文件名提取区名"""
@@ -603,28 +795,28 @@ class ParallelPOICrawler:
         print(f"\n{district_name} 爬取完成！总成功: {total_success}, 总失败: {total_errors}")
         print(f"数据已保存到: {self.output_file}")
         
-        # 清理进度文件
+        # 最终去重处理
+        self._final_deduplication()
+        
+        # 清理进度文件和Chrome实例
         self._cleanup_progress()
+        self._cleanup_all_drivers()
         
         return total_success, total_errors
 
     def _warm_up_drivers(self):
         """预热Chrome驱动实例，减少首次启动开销"""
         print("正在预热Chrome驱动实例...")
-        test_driver = None
         try:
-            test_driver = self.create_driver()
-            test_driver.get("https://www.google.com/maps")
+            # 使用复用池预热，这样实际爬取时会直接复用这个实例
+            driver = self._get_or_create_driver()
+            driver.get("https://www.google.com/maps")
             time.sleep(2)  # 让页面完全加载
-            print("Chrome驱动预热完成")
+            print("Chrome驱动预热完成，实例将被复用")
         except Exception as e:
             print(f"Chrome驱动预热失败: {e}")
-        finally:
-            if test_driver:
-                try:
-                    test_driver.quit()
-                except:
-                    pass
+            # 预热失败时清理实例，让后续重新创建
+            self._cleanup_driver()
 
     def crawl_all_districts(self, input_dir="data/input", resume_single_district=None):
         """批量处理input目录中的所有区文件"""
@@ -678,6 +870,9 @@ class ParallelPOICrawler:
         
         for district_summary in processed_districts:
             print(f"  {district_summary}")
+        
+        # 清理所有Chrome实例
+        self._cleanup_all_drivers()
 
     def _merge_results(self):
         # 不再需要合并，因为数据实时写入单个文件
@@ -725,6 +920,9 @@ class ParallelPOICrawler:
         
         for file_summary in processed_files:
             print(f"  {file_summary}")
+        
+        # 清理所有Chrome实例  
+        self._cleanup_all_drivers()
 
 
 def main():
@@ -735,7 +933,7 @@ def main():
     parser.add_argument('--file-list', type=str, help='从文件中读取要处理的文件列表（每行一个文件路径）')
     parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
     parser.add_argument('--workers', type=int, default=min(8, max(2, mp.cpu_count() - 2)), help='并发工作进程数')
-    parser.add_argument('--batch-size', type=int, default=80, help='批次大小')
+    parser.add_argument('--batch-size', type=int, default=150, help='批次大小')
     parser.add_argument('--status', action='store_true', help='查看未完成任务状态')
     parser.add_argument('--clean-progress', action='store_true', help='清理所有进度文件')
     

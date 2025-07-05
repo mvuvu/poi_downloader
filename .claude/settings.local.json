@@ -26,7 +26,15 @@
       "Bash(then)",
       "Bash(fi)",
       "Bash(awk:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(wc:*)",
+      "Bash(top:*)",
+      "Bash(export TF_CPP_MIN_LOG_LEVEL=3)",
+      "Bash(export:*)",
+      "Bash(timeout:*)",
+      "Bash(google-chrome:*)",
+      "Bash(chromium:*)"
     ],
     "deny": []
   }

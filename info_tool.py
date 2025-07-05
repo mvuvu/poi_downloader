@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import time
 import pandas as pd
 
-def wait_for_coords_url(driver, timeout=10):
+def wait_for_coords_url(driver, timeout=5):
     """等待跳转后的 Google Maps URL 出现 /@lat,lng 格式"""
     try:
         WebDriverWait(driver, timeout).until(lambda d: "/@" in d.current_url)
@@ -49,23 +49,34 @@ def get_building_type(driver):
 
 # 取得poi名稱
 def get_building_name(driver):
-    place_name_XPATH = '//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[1]/h1'
-    WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.XPATH, place_name_XPATH)))
-
+    # 尝试多个可能的XPath，优化速度（因为现在在展开按钮前获取，页面更稳定）
+    xpath_candidates = [
+        ('//*[@id="QA0Szd"]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[1]/h1', 5),  # 主要XPath，5秒足够
+        ('//h1[@data-value]', 2),
+        ('//h1[contains(@class, "x3AX1")]', 2),
+        ('//div[@data-value]//h1', 1),
+        ('//span[@data-value]', 1)
+    ]
     
+    for xpath, timeout in xpath_candidates:
+        try:
+            WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, xpath)))
+            place_name = driver.find_element(By.XPATH, xpath).text
+            if place_name and place_name.strip():
+                # 清理特殊字符
+                place_name = place_name.replace('/', ' ')
+                place_name = place_name.replace('|', ' ')
+                place_name = place_name.replace('｜', ' ')
+                place_name = place_name.replace('*', ' ')
+                place_name = place_name.replace('!', ' ')
+                place_name = place_name.replace('?', ' ')
+                place_name = place_name.replace(':', ' ')
+                return place_name.strip()
+        except:
+            continue
     
-    place_name = driver.find_element(By.XPATH, place_name_XPATH).text
-    place_name = place_name.replace('/', ' ')
-    place_name = place_name.replace('|', ' ')
-    place_name = place_name.replace('｜', ' ')
-    place_name = place_name.replace('*', ' ')
-    place_name = place_name.replace('!', ' ')
-    place_name = place_name.replace('?', ' ')
-    place_name = place_name.replace(':', ' ')
-
-    # Silently get building name
-
-    return place_name
+    # 如果所有XPath都失败，抛出异常让上层处理
+    raise Exception("无法找到地点名称")
 
 #获得已知poi总数
 def get_poi_type_total(driver):
