@@ -734,9 +734,8 @@ class SimplePOICrawler:
                 print(f"❌ 处理结果异常: {e}")
                 continue
     
-    def crawl_from_csv(self, input_file, output_file):
-        """从CSV文件爬取POI数据 - 支持断点续传"""
-        # 设置当前文件信息
+    def _setup_file_processing(self, input_file):
+        """设置文件处理的断点续传参数 - 统一接口"""
         self.current_file_name = self._extract_file_name(input_file)
         self.progress_file = self.progress_dir / f"{self.current_file_name}_simple_progress.json"
         
@@ -747,7 +746,7 @@ class SimplePOICrawler:
         addresses = self.load_addresses_from_csv(input_file)
         if not addresses:
             print("❌ 没有有效地址可处理")
-            return
+            return None
         
         # 处理断点续传
         if progress_data:
@@ -767,21 +766,42 @@ class SimplePOICrawler:
             if not remaining_addresses:
                 print("✅ 所有地址已处理完成！")
                 self._cleanup_progress()
-                return
+                return None
                 
             addresses = remaining_addresses
+        else:
+            # 重置统计信息
+            self.processed_indices = set()
+            self.processed_tasks = 0
+            self.success_count = 0
+            self.error_count = 0
         
         self.total_tasks = len(addresses) + self.processed_tasks  # 包含已处理的任务数
+        return addresses
+    
+    def _finalize_file_processing(self):
+        """完成文件处理后的清理工作 - 统一接口"""
+        # 保存最终进度并清理
+        self._save_progress()
+        self._cleanup_progress()
+    
+    def process_single_file(self, input_file, output_file, workers_started=False):
+        """处理单个文件的统一接口 - 支持断点续传"""
+        # 设置文件处理参数
+        addresses = self._setup_file_processing(input_file)
+        if addresses is None:
+            return {'success': False, 'reason': '无地址或已完成'}
         
         # 初始化结果缓存池
         self.result_buffer = ResultBuffer(output_file, self.batch_size, self.flush_interval, self.verbose)
         
-        # 启动工作线程
-        self.start_workers()
-        
-        # 启动结果处理线程
-        result_thread = threading.Thread(target=self.process_results, daemon=True)
-        result_thread.start()
+        # 启动工作线程（如果还没启动）
+        if not workers_started:
+            self.start_workers()
+            
+            # 启动结果处理线程
+            result_thread = threading.Thread(target=self.process_results, daemon=True)
+            result_thread.start()
         
         try:
             # 添加任务到队列
@@ -789,23 +809,57 @@ class SimplePOICrawler:
             for addr_data in addresses:
                 self.task_queue.put(addr_data)
             
-            print(f"⏰ 等待所有任务完成...")
-            start_time = time.time()
-            
-            # 等待所有任务完成
+            # 等待当前文件的任务完成
             self.task_queue.join()
             
             # 等待结果处理完成
-            self.result_queue.join()
+            while not self.result_queue.empty():
+                time.sleep(0.1)
+            
+            # 最终刷新缓存
+            if self.result_buffer:
+                self.result_buffer.final_flush()
+            
+            # 完成文件处理
+            self._finalize_file_processing()
+            
+            return {
+                'success': True, 
+                'processed': self.processed_tasks,
+                'success_count': self.success_count,
+                'error_count': self.error_count
+            }
+            
+        except Exception as e:
+            # 即使出错也保存进度
+            try:
+                self._save_progress()
+            except:
+                pass
+            return {'success': False, 'reason': str(e)}
+    
+    def crawl_from_csv(self, input_file, output_file):
+        """从CSV文件爬取POI数据 - 支持断点续传"""
+        print(f"⏰ 等待所有任务完成...")
+        start_time = time.time()
+        
+        try:
+            # 使用统一的处理接口
+            result = self.process_single_file(input_file, output_file, workers_started=False)
+            
+            if not result['success']:
+                print(f"❌ 处理失败: {result.get('reason', '未知错误')}")
+                return
             
             elapsed_time = time.time() - start_time
             
             print(f"🎉 所有任务完成！")
             print(f"⏱️  耗时: {elapsed_time/60:.1f} 分钟")
-            print(f"📊 总计: {self.processed_tasks} 个任务")
-            print(f"✅ 成功: {self.success_count}")
-            print(f"❌ 失败: {self.error_count}")
-            print(f"📈 成功率: {(self.success_count/self.processed_tasks*100):.1f}%")
+            print(f"📊 总计: {result['processed']} 个任务")
+            print(f"✅ 成功: {result['success_count']}")
+            print(f"❌ 失败: {result['error_count']}")
+            if result['processed'] > 0:
+                print(f"📈 成功率: {(result['success_count']/result['processed']*100):.1f}%")
             
         except KeyboardInterrupt:
             print("\n🛑 收到中断信号，正在安全退出...")
@@ -813,14 +867,6 @@ class SimplePOICrawler:
         finally:
             # 停止工作线程
             self.stop_workers()
-            
-            # 最终刷新缓存
-            if self.result_buffer:
-                self.result_buffer.final_flush()
-            
-            # 保存最终进度并清理
-            self._save_progress()
-            self._cleanup_progress()
             
             print(f"📁 结果已保存到: {output_file}")
     
@@ -854,52 +900,20 @@ class SimplePOICrawler:
             Path(output_file).parent.mkdir(parents=True, exist_ok=True)
             
             try:
-                # 加载地址
-                addresses = self.load_addresses_from_csv(file_path)
-                if not addresses:
-                    print(f"⚠️  {file_name}: 没有有效地址，跳过")
-                    processed_files.append(f"{file_name}: 跳过（无地址）")
+                # 使用统一的处理接口
+                workers_already_started = (i > 0)  # 从第二个文件开始，工作线程已经启动
+                result = self.process_single_file(file_path, output_file, workers_already_started)
+                
+                if not result['success']:
+                    processed_files.append(f"{file_name}: {result.get('reason', '处理失败')}")
                     continue
                 
-                # 重置统计信息
-                self.total_tasks = len(addresses)
-                self.processed_tasks = 0
-                self.success_count = 0
-                self.error_count = 0
-                
-                # 初始化结果缓存池
-                self.result_buffer = ResultBuffer(output_file, self.batch_size, self.flush_interval, self.verbose)
-                
-                # 启动工作线程（只在第一个文件时启动）
-                if i == 0:
-                    self.start_workers()
-                    
-                    # 启动结果处理线程
-                    result_thread = threading.Thread(target=self.process_results, daemon=True)
-                    result_thread.start()
-                
-                # 添加任务到队列
-                print(f"📤 添加 {len(addresses)} 个任务到队列...")
-                for addr_data in addresses:
-                    self.task_queue.put(addr_data)
-                
-                # 等待当前文件的任务完成
-                self.task_queue.join()
-                
-                # 等待结果处理完成
-                while not self.result_queue.empty():
-                    time.sleep(0.1)
-                
-                # 最终刷新缓存
-                if self.result_buffer:
-                    self.result_buffer.final_flush()
-                
                 # 统计结果
-                all_success += self.success_count
-                all_errors += self.error_count
-                processed_files.append(f"{file_name}: 成功{self.success_count}, 失败{self.error_count}")
+                all_success += result['success_count']
+                all_errors += result['error_count']
+                processed_files.append(f"{file_name}: 成功{result['success_count']}, 失败{result['error_count']}")
                 
-                print(f"✅ {file_name} 完成 - 成功: {self.success_count}, 失败: {self.error_count}")
+                print(f"✅ {file_name} 完成 - 成功: {result['success_count']}, 失败: {result['error_count']}")
                 print(f"📁 输出文件: {output_file}")
                 
             except Exception as e:

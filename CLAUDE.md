@@ -4,11 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-POI Crawler is a high-performance web scraping system that extracts Point of Interest (POI) data from Google Maps using Selenium. The system comes in two versions and consists of multiple components:
+POI Crawler is a high-performance web scraping system that extracts Point of Interest (POI) data from Google Maps using Selenium. The system comes in three versions and consists of multiple components:
 
 ### Versions
 1. **Standard Version** (`parallel_poi_crawler.py`) - Multi-process architecture, stable and reliable
 2. **Turbo Version** (`parallel_poi_crawler_turbo.py`) - High-performance multi-threaded architecture with optimized resource management
+3. **Simple Version** (`poi_crawler_simple.py`) - Lightweight single-process multi-threaded architecture, ideal for debugging and small-scale tasks
 
 ### Core Components
 1. **POI Data Crawler** - Scrapes POI information (names, ratings, classifications, addresses, etc.) from Google Maps
@@ -20,6 +21,7 @@ POI Crawler is a high-performance web scraping system that extracts Point of Int
 
 - `parallel_poi_crawler.py` - Standard version: Multi-process crawling with stable performance
 - `parallel_poi_crawler_turbo.py` - Turbo version: High-performance multi-threaded architecture
+- `poi_crawler_simple.py` - Simple version: Lightweight single-process multi-threaded architecture
 - `info_tool.py` - Data extraction functions for POI information from web pages  
 - `driver_action.py` - Browser automation functions (scrolling, clicking, navigation)
 - `address_converter.py` - Address translation system using mapping data
@@ -47,6 +49,14 @@ POI Crawler is a high-performance web scraping system that extracts Point of Int
 - **Thread-Local Statistics**: Lock-free performance monitoring
 - **Intelligent Retry System**: Three-layer retry mechanism (primary → secondary → fallback)
 
+#### Simple Version
+- **Single-Process Multi-Threading**: Lightweight architecture with persistent Chrome workers
+- **Unified Interface Design**: Common methods for all processing modes (single file, multiple files, patterns, file lists)
+- **Complete Checkpoint System**: Full progress tracking with JSON-based resume capability
+- **Intelligent Retry Logic**: Non-building addresses automatically retry with Japanese address format
+- **Hotel Page Filtering**: Precise detection and filtering of hotel category pages
+- **Resource Management**: Automatic driver cleanup and memory optimization
+
 ## Common Commands
 
 ### POI Crawling
@@ -60,22 +70,30 @@ python parallel_poi_crawler.py --all
 # Turbo Version - High performance processing
 python parallel_poi_crawler_turbo.py --all
 
+# Simple Version - Lightweight testing and debugging
+python poi_crawler_simple.py --all
+
 # Process single file
 python parallel_poi_crawler.py data/input/千代田区_complete.csv
 python parallel_poi_crawler_turbo.py data/input/千代田区_complete.csv
+python poi_crawler_simple.py data/input/千代田区_complete.csv
 
 # Process multiple files
 python parallel_poi_crawler.py file1.csv file2.csv file3.csv
 python parallel_poi_crawler_turbo.py file1.csv file2.csv file3.csv
+python poi_crawler_simple.py file1.csv file2.csv file3.csv
 
 # Use wildcard pattern
 python parallel_poi_crawler.py --pattern "data/input/*区_complete*.csv"
+python poi_crawler_simple.py --pattern "data/input/*区_complete*.csv"
 
 # Use file list
 python parallel_poi_crawler.py --file-list files_to_process.txt
+python poi_crawler_simple.py --file-list files_to_process.txt
 
 # Check crawling status
 python parallel_poi_crawler.py --status
+python poi_crawler_simple.py --status
 ```
 
 ### Address Conversion
@@ -134,6 +152,16 @@ python address_converter.py --regenerate
 - FIFO task queue prevents task starvation
 - Batch size: 25 records per batch for balanced performance
 
+### Simple Version
+- Single-process multi-threaded architecture with 10 worker threads by default
+- Persistent Chrome workers for reduced initialization overhead
+- Complete checkpoint/resume system with JSON progress tracking
+- Intelligent retry for non-building addresses using Japanese format
+- Hotel page detection and filtering using precise element matching
+- Unified processing interfaces for all file selection modes
+- Batch size: 50 records per batch (configurable)
+- Memory optimization with automatic driver cleanup
+
 ### Common Notes
 - XPath selectors are specific to Google Maps DOM structure and may need updates
 - Address conversion assumes Tokyo area mapping data
@@ -162,6 +190,16 @@ python address_converter.py --regenerate
 - Enhanced retry mechanism with three-layer fallback system
 - Comprehensive warning and error logging system
 
+### Simple Version Implementation (2025-07)
+- Added lightweight Simple version for debugging and small-scale tasks
+- Implemented complete checkpoint/resume functionality for all processing modes
+- Added unified interface design with `_setup_file_processing()` and `_finalize_file_processing()`
+- Fixed coordinate extraction bug in `wait_for_coords_url()` function
+- Implemented intelligent retry mechanism for non-building addresses
+- Added precise hotel page detection using specific h2 element matching
+- Optimized code structure reducing ~150 lines through unified interfaces
+- Added support for file lists, patterns, and multiple file processing with checkpoints
+
 ## Version Selection Guide
 
 ### When to Use Standard Version (parallel_poi_crawler.py)
@@ -176,13 +214,23 @@ python address_converter.py --regenerate
 - **Development environments** where maximum speed is desired
 - **Systems where you can monitor resource usage** and adjust parameters
 
+### When to Use Simple Version (poi_crawler_simple.py)
+- **Development and debugging** when you need to understand crawling behavior
+- **Small to medium-scale tasks** with hundreds to thousands of addresses
+- **Resource-constrained environments** where memory and CPU are limited
+- **Testing and validation** of crawling logic and data extraction
+- **Educational purposes** for understanding POI extraction mechanisms
+- **Problem troubleshooting** when other versions encounter issues
+
 ### Performance Comparison
-| Metric | Standard Version | Turbo Version |
-|--------|------------------|---------------|
-| Architecture | Multi-process | Multi-threaded |
-| Default Workers | CPU cores - 1 | CPU cores × 4 |
-| Chrome Instances | 4-8 | 20 |
-| Memory Usage | Low | Higher |
-| CPU Usage | Moderate | High |
-| Stability | Very High | High |
-| Speed | Good | Excellent |
+| Metric | Standard Version | Turbo Version | Simple Version |
+|--------|------------------|---------------|----------------|
+| Architecture | Multi-process | Multi-threaded | Single-process Multi-threaded |
+| Default Workers | CPU cores - 1 | CPU cores × 4 | 10 threads |
+| Chrome Instances | 4-8 | 20 | 10 |
+| Memory Usage | Low | Higher | Low |
+| CPU Usage | Moderate | High | Low-Moderate |
+| Stability | Very High | High | High |
+| Speed | Good | Excellent | Good |
+| Debugging | Difficult | Moderate | Easy |
+| Code Complexity | High | Very High | Low |
