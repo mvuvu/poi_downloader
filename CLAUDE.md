@@ -199,6 +199,10 @@ python address_converter.py --regenerate
 - Added precise hotel page detection using specific h2 element matching
 - Optimized code structure reducing ~150 lines through unified interfaces
 - Added support for file lists, patterns, and multiple file processing with checkpoints
+- **Added visual progress bar using tqdm library with real-time statistics**
+- **Progress bar shows processing speed, success/failure counts, and estimated completion time**
+- **Supports checkpoint resume with accurate progress tracking**
+- **Controllable via `--no-progress` parameter for headless environments**
 
 ## Version Selection Guide
 

@@ -36,7 +36,8 @@
       "Bash(google-chrome:*)",
       "Bash(chromium:*)",
       "Bash(nproc)",
-      "Bash(touch:*)"
+      "Bash(touch:*)",
+      "Bash(sudo cp:*)"
     ],
     "deny": []
   }

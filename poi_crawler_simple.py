@@ -18,7 +18,9 @@ import os
 import gc
 import argparse
 import glob
+import signal
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 # 导入现有的POI提取函数
 from info_tool import get_building_type, get_building_name, get_all_poi_info, get_coords, wait_for_coords_url, has_hotel_category
@@ -28,13 +30,14 @@ from driver_action import click_on_more_button, scroll_poi_section
 class ChromeWorker(threading.Thread):
     """持久化Chrome工作线程"""
     
-    def __init__(self, worker_id, task_queue, result_queue, stop_event, verbose=False):
+    def __init__(self, worker_id, task_queue, result_queue, stop_event, verbose=False, retry_queue=None):
         super().__init__(daemon=True)
         self.worker_id = worker_id
         self.task_queue = task_queue
         self.result_queue = result_queue
         self.stop_event = stop_event
         self.verbose = verbose
+        self.retry_queue = retry_queue  # 重试队列
         self.driver = None
         self.processed_count = 0
         self.success_count = 0
@@ -125,8 +128,17 @@ class ChromeWorker(threading.Thread):
         try:
             while not self.stop_event.is_set():
                 try:
-                    # 从队列获取任务，超时1秒
-                    task = self.task_queue.get(timeout=1.0)
+                    task = None
+                    task_source = None
+                    
+                    # 首先检查重试队列（优先级更高）
+                    try:
+                        task = self.retry_queue.get_nowait()
+                        task_source = 'retry'
+                    except queue.Empty:
+                        # 重试队列为空，从主任务队列获取
+                        task = self.task_queue.get(timeout=1.0)
+                        task_source = 'main'
                     
                     # 处理任务
                     result = self.process_task(task)
@@ -135,7 +147,10 @@ class ChromeWorker(threading.Thread):
                     self.result_queue.put(result)
                     
                     # 标记任务完成
-                    self.task_queue.task_done()
+                    if task_source == 'retry':
+                        self.retry_queue.task_done()
+                    else:
+                        self.task_queue.task_done()
                     
                     # 更新统计
                     self.processed_count += 1
@@ -156,6 +171,23 @@ class ChromeWorker(threading.Thread):
                             self.driver.execute_script("window.gc();")
                         except:
                             pass
+                    
+                    # 每1000个任务重启worker
+                    if self.processed_count % 1000 == 0 and self.processed_count > 0:
+                        print(f"🔄 Worker {self.worker_id}: 达到1000个任务，重启Chrome驱动...")
+                        try:
+                            # 关闭当前driver
+                            if self.driver:
+                                self.driver.quit()
+                            # 创建新的driver
+                            self.driver = self.create_driver()
+                            print(f"✅ Worker {self.worker_id}: Chrome驱动重启成功")
+                        except Exception as e:
+                            print(f"❌ Worker {self.worker_id}: Chrome驱动重启失败: {e}")
+                            # 如果重启失败，尝试继续使用现有driver或退出
+                            if not self.driver:
+                                print(f"💥 Worker {self.worker_id}: 无法继续，退出工作线程")
+                                break
                     
                 except queue.Empty:
                     # 队列为空，继续等待
@@ -186,8 +218,8 @@ class ChromeWorker(threading.Thread):
         is_retry = task.get('is_retry', False)
         
         try:
-            # 调用现有的POI提取逻辑
-            result = self.crawl_poi_info(address)
+            # 调用现有的POI提取逻辑，传递重试标识
+            result = self.crawl_poi_info(address, is_retry=is_retry)
             
             if result.get('status') == 'success':
                 return {
@@ -230,8 +262,8 @@ class ChromeWorker(threading.Thread):
                 'is_retry': is_retry
             }
     
-    def crawl_poi_info(self, address):
-        """POI信息爬取 - 基于现有代码简化版"""
+    def crawl_poi_info(self, address, is_retry=False):
+        """POI信息爬取 - 基于现有代码简化版，支持快速重试模式"""
         url = f'https://www.google.com/maps/place/{address}'
         
         # 添加地址处理开始日志
@@ -263,14 +295,23 @@ class ChromeWorker(threading.Thread):
                 # 尝试备用方案获取地点名称
                 place_name = self._get_fallback_location_name(self.driver, address) or 'Unknown Location'
                     
-            # 尝试展开POI列表
-            try:
-                more_button = self.driver.find_elements('class name', 'M77dve')
-                if more_button:
-                    click_on_more_button(self.driver)
-                    scroll_poi_section(self.driver)
-            except:
-                pass
+            # 尝试展开POI列表 - 重试时跳过滚动
+            if not is_retry:  # 只在非重试时执行完整的POI滚动
+                try:
+                    more_button = self.driver.find_elements('class name', 'M77dve')
+                    if more_button:
+                        click_on_more_button(self.driver)
+                        scroll_poi_section(self.driver)
+                except:
+                    pass
+            else:
+                # 重试时的简化检查，只等待基本元素加载
+                try:
+                    WebDriverWait(self.driver, 3).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".m6QErb.DxyBCb.kA9KIf.dS8AEf"))
+                    )
+                except:
+                    pass
 
 
             df = get_all_poi_info(self.driver)
@@ -380,11 +421,12 @@ class ChromeWorker(threading.Thread):
 class ResultBuffer:
     """结果缓存池 - 定期落盘"""
     
-    def __init__(self, output_file, batch_size=50, flush_interval=30, verbose=False):
+    def __init__(self, output_file, batch_size=50, flush_interval=30, verbose=False, crawler_instance=None):
         self.output_file = Path(output_file)
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.verbose = verbose
+        self.crawler_instance = crawler_instance
         self.buffer = []
         self.lock = threading.Lock()
         self.last_flush_time = time.time()
@@ -398,12 +440,33 @@ class ResultBuffer:
         self.flush_thread.start()
     
     def create_header(self):
-        """创建CSV文件头部"""
+        """创建CSV文件头部 - 支持断点续传"""
         if not self.output_file.exists():
+            # 文件不存在，创建新文件
             header_df = pd.DataFrame(columns=['name', 'rating', 'class', 'add', 'comment_count', 'blt_name', 'lat', 'lng'])
             header_df.to_csv(self.output_file, index=False, encoding='utf-8-sig')
             if self.verbose:
                 print(f"📝 创建输出文件: {self.output_file}")
+        else:
+            # 文件存在，检查断点续传情况
+            try:
+                # 读取现有文件检查数据状态
+                existing_df = pd.read_csv(self.output_file, encoding='utf-8-sig')
+                if existing_df.empty:
+                    # 文件存在但为空，重新创建头部
+                    header_df = pd.DataFrame(columns=['name', 'rating', 'class', 'add', 'comment_count', 'blt_name', 'lat', 'lng'])
+                    header_df.to_csv(self.output_file, index=False, encoding='utf-8-sig')
+                    if self.verbose:
+                        print(f"📝 重新创建输出文件头部: {self.output_file}")
+                else:
+                    if self.verbose:
+                        print(f"📝 继续使用现有输出文件: {self.output_file} (已有{len(existing_df)}条数据)")
+            except Exception as e:
+                if self.verbose:
+                    print(f"⚠️ 读取现有文件失败，重新创建: {e}")
+                # 出错时重新创建文件
+                header_df = pd.DataFrame(columns=['name', 'rating', 'class', 'add', 'comment_count', 'blt_name', 'lat', 'lng'])
+                header_df.to_csv(self.output_file, index=False, encoding='utf-8-sig')
     
     def add_result(self, result):
         """添加结果到缓存池 - 🔧 POI为空时快速跳过"""
@@ -444,6 +507,12 @@ class ResultBuffer:
         if not self.buffer:
             return
         
+        # 检查中断标志
+        if self.crawler_instance and self.crawler_instance.interrupt_flag.is_set():
+            if self.verbose:
+                print("⚠️  检测到中断信号，跳过数据写入")
+            return
+        
         try:
             # 合并所有DataFrame
             combined_df = pd.concat(self.buffer, ignore_index=True)
@@ -466,15 +535,17 @@ class ResultBuffer:
     def final_flush(self):
         """最终刷新所有剩余数据"""
         with self.lock:
-            if self.buffer:
+            if self.buffer and not (self.crawler_instance and self.crawler_instance.interrupt_flag.is_set()):
                 self._flush_to_disk()
                 print(f"✅ 最终保存完成，总计: {self.total_saved} 条数据")
+            elif self.crawler_instance and self.crawler_instance.interrupt_flag.is_set():
+                print(f"⚠️  由于中断，跳过最终数据写入，已保存: {self.total_saved} 条数据")
 
 
 class SimplePOICrawler:
     """简化版POI爬虫 - 10个持久化Chrome工作线程"""
     
-    def __init__(self, num_workers=10, batch_size=50, flush_interval=30, verbose=False, enable_resume=True):
+    def __init__(self, num_workers=10, batch_size=50, flush_interval=30, verbose=False, enable_resume=True, show_progress=True):
         self.num_workers = num_workers
         self.batch_size = batch_size
         self.flush_interval = flush_interval
@@ -483,8 +554,10 @@ class SimplePOICrawler:
         
         # 任务和结果队列
         self.task_queue = queue.Queue()
+        self.retry_queue = queue.Queue()  # 专门的重试队列，优先处理
         self.result_queue = queue.Queue()
         self.stop_event = threading.Event()
+        self.interrupt_flag = threading.Event()  # 中断标志
         
         # 工作线程
         self.workers = []
@@ -498,12 +571,44 @@ class SimplePOICrawler:
         self.progress_file = None
         self.processed_indices = set()  # 已处理的索引
         self.current_file_name = None  # 当前处理的文件名
+        self.current_output_file = None  # 当前输出文件路径
+        
+        # 重试优化
+        self.retry_cache = set()  # 重试地址缓存，避免重复重试
         
         # 统计信息
         self.total_tasks = 0
         self.processed_tasks = 0
         self.success_count = 0
         self.error_count = 0
+        
+        # 进度条支持
+        self.progress_bar = None
+        self.show_progress = show_progress
+        self.start_time = None
+        self.progress_lock = threading.Lock()  # 进度条更新锁
+        
+        # 设置信号处理器
+        self._setup_signal_handlers()
+    
+    def _setup_signal_handlers(self):
+        """设置信号处理器用于安全中断"""
+        def signal_handler(signum, frame):
+            print("\n🚨 接收到中断信号 (Ctrl+C)，正在安全退出...")
+            self.interrupt_flag.set()
+            self.stop_event.set()
+            
+            # 关闭进度条
+            if self.progress_bar:
+                with self.progress_lock:
+                    self.progress_bar.close()
+                    self.progress_bar = None
+            
+            print("🔄 正在停止工作线程和清理资源...")
+        
+        signal.signal(signal.SIGINT, signal_handler)
+        if hasattr(signal, 'SIGTERM'):  # Windows 上可能没有 SIGTERM
+            signal.signal(signal.SIGTERM, signal_handler)
     
     def discover_input_files(self, pattern="data/input/*区_*.csv"):
         """发现输入文件 - 支持--all功能"""
@@ -587,24 +692,45 @@ class SimplePOICrawler:
         """从文件路径提取文件名作为进度标识"""
         return Path(file_path).stem
     
+    def _get_last_processed_index(self):
+        """获取最后一个处理的索引"""
+        if not self.processed_indices:
+            return -1
+        return max(self.processed_indices)
+    
     def _save_progress(self):
-        """保存当前进度到JSON文件"""
-        if not self.enable_resume or not self.progress_file:
+        """保存当前进度到JSON文件 - 优化版（只保存最后处理的索引）"""
+        if not self.enable_resume or not self.progress_file or self.interrupt_flag.is_set():
             return
         
         try:
+            # 先检查是否已有进度文件，保持原始时间戳
+            existing_timestamp = None
+            if self.progress_file.exists():
+                try:
+                    with open(self.progress_file, 'r', encoding='utf-8') as f:
+                        existing_data = json.load(f)
+                        existing_timestamp = existing_data.get('timestamp')
+                except:
+                    pass  # 如果读取失败，就使用新的时间戳
+            
             progress_data = {
                 'file_name': self.current_file_name,
-                'processed_indices': list(self.processed_indices),
+                'output_file': str(self.current_output_file) if self.current_output_file else None,
+                'last_processed_index': self._get_last_processed_index(),
                 'total_tasks': self.total_tasks,
                 'processed_tasks': self.processed_tasks,
                 'success_count': self.success_count,
                 'error_count': self.error_count,
-                'timestamp': time.time()
+                'timestamp': existing_timestamp if existing_timestamp is not None else time.time(),  # 保持原时间戳或创建新的
+                'last_updated': time.time()  # 添加最后更新时间
             }
             
             with open(self.progress_file, 'w', encoding='utf-8') as f:
                 json.dump(progress_data, f, ensure_ascii=False, indent=2)
+                
+            if self.verbose:
+                print(f"💾 进度已保存: {self.processed_tasks}/{self.total_tasks}, 最后索引: {self._get_last_processed_index()}")
                 
         except Exception as e:
             print(f"⚠️  保存进度失败: {e}")
@@ -625,6 +751,10 @@ class SimplePOICrawler:
             
             # 检查是否是同一个文件的进度
             if progress_data.get('file_name') == file_name:
+                # 输出文件路径用于调试和验证
+                if self.verbose and 'output_file' in progress_data:
+                    last_index = progress_data.get('last_processed_index', -1)
+                    print(f"📁 从进度文件加载: 输出路径={progress_data['output_file']}, 最后索引={last_index}")
                 return progress_data
                 
         except (json.JSONDecodeError, KeyError, FileNotFoundError) as e:
@@ -647,7 +777,7 @@ class SimplePOICrawler:
         print(f"🚀 启动 {self.num_workers} 个Chrome工作线程...")
         
         for i in range(self.num_workers):
-            worker = ChromeWorker(i, self.task_queue, self.result_queue, self.stop_event, self.verbose)
+            worker = ChromeWorker(i, self.task_queue, self.result_queue, self.stop_event, self.verbose, self.retry_queue)
             worker.start()
             self.workers.append(worker)
             time.sleep(1)  # 错开启动时间，避免并发创建driver
@@ -656,25 +786,36 @@ class SimplePOICrawler:
     
     def stop_workers(self):
         """停止工作线程"""
-        print("🛑 停止所有工作线程...")
+        if not self.interrupt_flag.is_set():
+            print("🛑 停止所有工作线程...")
         
         # 设置停止事件
         self.stop_event.set()
         
-        # 等待队列完成
-        self.task_queue.join()
+        # 如果是中断，不等待队列完成，直接停止
+        if not self.interrupt_flag.is_set():
+            self.task_queue.join()
         
-        # 等待工作线程结束
+        # 等待工作线程结束（中断时更短的超时）
+        timeout = 1 if self.interrupt_flag.is_set() else 5
         for worker in self.workers:
-            worker.join(timeout=5)
+            worker.join(timeout=timeout)
         
-        print("✅ 所有工作线程已停止")
+        if not self.interrupt_flag.is_set():
+            print("✅ 所有工作线程已停止")
+        else:
+            print("✅ 工作线程已快速停止")
     
     def process_results(self):
         """处理结果队列"""
         print("📊 启动结果处理线程...")
         
         while not self.stop_event.is_set() or not self.result_queue.empty():
+            # 检查中断标志
+            if self.interrupt_flag.is_set():
+                print("⚠️  检测到中断信号，结果处理线程退出")
+                break
+                
             try:
                 result = self.result_queue.get(timeout=1.0)
                 
@@ -692,8 +833,16 @@ class SimplePOICrawler:
                 else:
                     self.error_count += 1
                 
+                # 更新进度条（线程安全）
+                if self.progress_bar:
+                    with self.progress_lock:
+                        self.progress_bar.update(1)
+                        # 每5个任务更新一次详细信息，避免过于频繁的更新
+                        if self.processed_tasks % 5 == 0:
+                            self._update_progress_bar()
+                
                 # 定期保存进度（每处理10个任务保存一次）
-                if self.processed_tasks % 10 == 0:
+                if self.processed_tasks % 10 == 0 and not self.interrupt_flag.is_set():
                     self._save_progress()
                 
                 # 检查是否需要使用日文地址重试（针对成功但无POI的情况）
@@ -701,18 +850,25 @@ class SimplePOICrawler:
                     result.get('result_type') == 'not_building' and  # 只对非建筑物进行重试
                     result.get('original_address') and 
                     result['address'] != result['original_address'] and
-                    not result.get('is_retry', False)):  # 避免重复重试
+                    not result.get('is_retry', False) and  # 避免重复重试
+                    result.get('original_address') not in self.retry_cache):  # 检查缓存
+                    
+                    original_address = result.get('original_address')
+                    
+                    # 记录到重试缓存
+                    self.retry_cache.add(original_address)
                     
                     # 使用日文地址重试
-                    print(f"🔄 非建筑物，使用日文地址重试: {result['original_address'][:30]}...")
+                    print(f"🔄 非建筑物，使用日文地址重试: {original_address[:30]}...")
                     
                     retry_task = {
-                        'address': result['original_address'],
+                        'address': original_address,
                         'index': result['index'],
-                        'original_address': result['original_address'],
+                        'original_address': original_address,
                         'is_retry': True
                     }
-                    self.task_queue.put(retry_task)
+                    # 放入优先级重试队列，立即处理
+                    self.retry_queue.put(retry_task)
                     # 增加总任务数以包含重试任务
                     self.total_tasks += 1
                 
@@ -734,13 +890,31 @@ class SimplePOICrawler:
                 print(f"❌ 处理结果异常: {e}")
                 continue
     
-    def _setup_file_processing(self, input_file):
+    def _setup_file_processing(self, input_file, output_file=None):
         """设置文件处理的断点续传参数 - 统一接口"""
         self.current_file_name = self._extract_file_name(input_file)
         self.progress_file = self.progress_dir / f"{self.current_file_name}_simple_progress.json"
         
         # 检查是否有未完成的进度
         progress_data = self._load_progress(self.current_file_name)
+        
+        # 🔧 断点续传：优先使用保存的输出文件路径
+        if progress_data and 'output_file' in progress_data:
+            self.current_output_file = progress_data['output_file']
+            print(f"🔄 发现未完成的任务，从断点继续...")
+            print(f"📊 之前进度: {progress_data['processed_tasks']}/{progress_data['total_tasks']}")
+            print(f"📁 续传输出文件: {self.current_output_file}")
+            
+            # 如果用户指定了不同的输出文件，给出警告
+            if output_file and output_file != self.current_output_file:
+                print(f"⚠️  用户指定的输出文件与断点续传文件不一致:")
+                print(f"   - 断点续传: {self.current_output_file}")
+                print(f"   - 用户指定: {output_file}")
+                print(f"   - 将使用断点续传文件: {self.current_output_file}")
+        else:
+            # 没有进度数据，使用指定的输出文件
+            if output_file:
+                self.current_output_file = output_file
         
         # 加载地址
         addresses = self.load_addresses_from_csv(input_file)
@@ -750,18 +924,18 @@ class SimplePOICrawler:
         
         # 处理断点续传
         if progress_data:
-            print(f"🔄 发现未完成的任务，从断点继续...")
-            print(f"📊 之前进度: {progress_data['processed_tasks']}/{progress_data['total_tasks']}")
-            
-            # 恢复已处理的索引
-            self.processed_indices = set(progress_data.get('processed_indices', []))
+            # 恢复统计信息
+            last_processed_index = progress_data.get('last_processed_index', -1)
             self.processed_tasks = progress_data.get('processed_tasks', 0)
             self.success_count = progress_data.get('success_count', 0)
             self.error_count = progress_data.get('error_count', 0)
             
-            # 过滤出未处理的地址
-            remaining_addresses = [addr for addr in addresses if addr['index'] not in self.processed_indices]
-            print(f"📋 剩余未处理地址: {len(remaining_addresses)} 条")
+            # 重新构建 processed_indices（从 0 到 last_processed_index）
+            self.processed_indices = set(range(0, last_processed_index + 1)) if last_processed_index >= 0 else set()
+            
+            # 过滤出未处理的地址（索引大于 last_processed_index）
+            remaining_addresses = [addr for addr in addresses if addr['index'] > last_processed_index]
+            print(f"📋 剩余未处理地址: {len(remaining_addresses)} 条 (从索引 {last_processed_index + 1} 开始)")
             
             if not remaining_addresses:
                 print("✅ 所有地址已处理完成！")
@@ -777,23 +951,77 @@ class SimplePOICrawler:
             self.error_count = 0
         
         self.total_tasks = len(addresses) + self.processed_tasks  # 包含已处理的任务数
+        
+        # 初始化进度条
+        if self.show_progress and self.total_tasks > 0:
+            self.start_time = time.time()
+            remaining_tasks = len(addresses)
+            
+            with self.progress_lock:
+                # 关闭旧的进度条
+                if self.progress_bar:
+                    self.progress_bar.close()
+                
+                # 创建新的进度条
+                self.progress_bar = tqdm(
+                    total=self.total_tasks,
+                    initial=self.processed_tasks,
+                    desc=f"🔍 {self.current_file_name[:12]}",
+                    unit="条",
+                    ncols=90,
+                    position=0,
+                    leave=True,
+                    bar_format='{desc}: {percentage:3.0f}%|{bar:20}| {n_fmt}/{total_fmt} {postfix}'
+                )
+                
+                # 更新进度条信息
+                self._update_progress_bar()
+        
         return addresses
+    
+    def _update_progress_bar(self):
+        """更新进度条显示信息（内部方法，调用时需已获得锁）"""
+        if not self.progress_bar:
+            return
+            
+        elapsed_time = time.time() - self.start_time if self.start_time else 0
+        speed = self.processed_tasks / elapsed_time if elapsed_time > 0 else 0
+        
+        # 计算成功率
+        success_rate = (self.success_count / self.processed_tasks * 100) if self.processed_tasks > 0 else 0
+        
+        # 简化的postfix信息
+        if speed > 0:
+            postfix = f"{success_rate:.0f}%成功 {speed:.1f}/s"
+        else:
+            postfix = f"{success_rate:.0f}%成功 启动中"
+        
+        self.progress_bar.set_postfix_str(postfix)
     
     def _finalize_file_processing(self):
         """完成文件处理后的清理工作 - 统一接口"""
-        # 保存最终进度并清理
-        self._save_progress()
-        self._cleanup_progress()
+        # 关闭进度条（线程安全）
+        with self.progress_lock:
+            if self.progress_bar:
+                self.progress_bar.close()
+                self.progress_bar = None
+        
+        # 保存最终进度并清理（只在未中断时）
+        if not self.interrupt_flag.is_set():
+            self._save_progress()
+            self._cleanup_progress()
+        else:
+            print("⚠️  由于中断，跳过最终进度保存和清理")
     
     def process_single_file(self, input_file, output_file, workers_started=False):
         """处理单个文件的统一接口 - 支持断点续传"""
         # 设置文件处理参数
-        addresses = self._setup_file_processing(input_file)
+        addresses = self._setup_file_processing(input_file, output_file)
         if addresses is None:
             return {'success': False, 'reason': '无地址或已完成'}
         
         # 初始化结果缓存池
-        self.result_buffer = ResultBuffer(output_file, self.batch_size, self.flush_interval, self.verbose)
+        self.result_buffer = ResultBuffer(output_file, self.batch_size, self.flush_interval, self.verbose, self)
         
         # 启动工作线程（如果还没启动）
         if not workers_started:
@@ -862,13 +1090,17 @@ class SimplePOICrawler:
                 print(f"📈 成功率: {(result['success_count']/result['processed']*100):.1f}%")
             
         except KeyboardInterrupt:
-            print("\n🛑 收到中断信号，正在安全退出...")
+            # Ctrl+C 已经由信号处理器处理，这里只需要静默退出
+            pass
         
         finally:
             # 停止工作线程
             self.stop_workers()
             
-            print(f"📁 结果已保存到: {output_file}")
+            if not self.interrupt_flag.is_set():
+                print(f"📁 结果已保存到: {output_file}")
+            else:
+                print(f"⚠️  由于中断，部分结果可能未保存: {output_file}")
     
     def crawl_multiple_files(self, file_list, output_dir="data/output"):
         """批量处理多个CSV文件"""
@@ -889,12 +1121,24 @@ class SimplePOICrawler:
             print(f"\n📂 处理第 {i+1}/{len(file_list)} 个文件: {file_name}")
             print("-" * 50)
             
-            # 为每个文件生成唯一的输出文件名
+            # 🔧 智能输出文件名生成 - 支持断点续传
             input_path = Path(file_path)
-            timestamp = int(time.time())
-            import random
-            unique_id = f"{timestamp}_{random.randint(1000, 9999)}"
-            output_file = f"{output_dir}/{input_path.stem}_simple_{unique_id}.csv"
+            
+            # 检查是否有断点续传的进度文件
+            file_name = self._extract_file_name(file_path)
+            progress_data = self._load_progress(file_name)
+            
+            if progress_data and 'output_file' in progress_data:
+                # 断点续传：使用之前保存的输出文件路径
+                output_file = progress_data['output_file']
+                print(f"🔄 断点续传，使用之前的输出文件: {output_file}")
+            else:
+                # 新文件：生成唯一的输出文件名
+                timestamp = int(time.time())
+                import random
+                unique_id = f"{timestamp}_{random.randint(1000, 9999)}"
+                output_file = f"{output_dir}/{input_path.stem}_simple_{unique_id}.csv"
+                print(f"📝 新文件，创建输出文件: {output_file}")
             
             # 确保输出目录存在
             Path(output_file).parent.mkdir(parents=True, exist_ok=True)
@@ -957,6 +1201,7 @@ def main():
     parser.add_argument('--flush-interval', '-f', type=int, default=30, help='刷新间隔秒数 (默认: 30)')
     parser.add_argument('--verbose', '-v', action='store_true', help='详细日志输出模式')
     parser.add_argument('--no-resume', action='store_true', help='禁用断点续传功能')
+    parser.add_argument('--no-progress', action='store_true', help='禁用进度条显示')
     
     args = parser.parse_args()
     
@@ -970,7 +1215,8 @@ def main():
         batch_size=args.batch_size,
         flush_interval=args.flush_interval,
         verbose=args.verbose,
-        enable_resume=not args.no_resume
+        enable_resume=not args.no_resume,
+        show_progress=not args.no_progress
     )
     
     # 确定要处理的文件列表
@@ -1023,14 +1269,25 @@ def main():
         # 单文件处理模式
         input_file = file_list[0]
         
-        # 📦 输出路径加唯一命名（防重复覆盖）
+        # 🔧 智能输出文件名生成 - 支持断点续传
         if not args.output:
             input_path = Path(input_file)
-            timestamp = int(time.time())
-            # 使用时间戳和随机数确保唯一性
-            import random
-            unique_id = f"{timestamp}_{random.randint(1000, 9999)}"
-            args.output = f"data/output/{input_path.stem}_simple_{unique_id}.csv"
+            
+            # 检查是否有断点续传的进度文件
+            file_name = crawler._extract_file_name(input_file)
+            progress_data = crawler._load_progress(file_name)
+            
+            if progress_data and 'output_file' in progress_data:
+                # 断点续传：使用之前保存的输出文件路径
+                args.output = progress_data['output_file']
+                print(f"🔄 断点续传，使用之前的输出文件: {args.output}")
+            else:
+                # 新文件：生成唯一的输出文件名
+                timestamp = int(time.time())
+                import random
+                unique_id = f"{timestamp}_{random.randint(1000, 9999)}"
+                args.output = f"data/output/{input_path.stem}_simple_{unique_id}.csv"
+                print(f"📝 新文件，创建输出文件: {args.output}")
         
         # 确保输出目录存在
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -1043,6 +1300,7 @@ def main():
         print(f"⏰ 刷新间隔: {args.flush_interval}秒")
         print(f"🔊 详细日志: {'开启' if args.verbose else '关闭'}")
         print(f"🔄 断点续传: {'开启' if not args.no_resume else '关闭'}")
+        print(f"📊 进度条: {'开启' if not args.no_progress else '关闭'}")
         print("="*60)
         
         crawler.crawl_from_csv(input_file, args.output)
@@ -1059,6 +1317,7 @@ def main():
         print(f"⏰ 刷新间隔: {args.flush_interval}秒")
         print(f"🔊 详细日志: {'开启' if args.verbose else '关闭'}")
         print(f"🔄 断点续传: {'开启' if not args.no_resume else '关闭'}")
+        print(f"📊 进度条: {'开启' if not args.no_progress else '关闭'}")
         print("="*60)
         
         crawler.crawl_multiple_files(file_list, output_dir)
