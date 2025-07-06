@@ -195,7 +195,7 @@ python address_converter.py --regenerate
 - Implemented complete checkpoint/resume functionality for all processing modes
 - Added unified interface design with `_setup_file_processing()` and `_finalize_file_processing()`
 - Fixed coordinate extraction bug in `wait_for_coords_url()` function
-- Implemented intelligent retry mechanism for non-building addresses
+- Implemented optimized retry mechanism for invalid address pages
 - Added precise hotel page detection using specific h2 element matching
 - Optimized code structure reducing ~150 lines through unified interfaces
 - Added support for file lists, patterns, and multiple file processing with checkpoints
@@ -203,6 +203,14 @@ python address_converter.py --regenerate
 - **Progress bar shows processing speed, success/failure counts, and estimated completion time**
 - **Supports checkpoint resume with accurate progress tracking**
 - **Controllable via `--no-progress` parameter for headless environments**
+
+### Retry Mechanism Optimization (2025-07)
+- **Early Invalid Address Detection**: Added H1 title-based page validation for rapid invalid address identification
+- **Dual Queue System**: Implemented high-priority retry queue for immediate processing of retry tasks
+- **Retry Scope Refinement**: Only invalid address pages trigger retry, non-building addresses no longer retry
+- **Performance Enhancement**: 1-3 second detection vs. previous lengthy processing for invalid pages
+- **Cache Mechanism**: Prevents duplicate retry attempts for the same address
+- **Smart Filtering**: H1 title presence determines valid building pages vs. area/invalid pages
 
 ## Version Selection Guide
 

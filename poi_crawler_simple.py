@@ -273,6 +273,20 @@ class ChromeWorker(threading.Thread):
         try:
             self.driver.get(url)
             
+            # 等待页面基本加载
+            time.sleep(1)  # 给页面一点时间开始跳转
+            
+            # 早期检测：判断是否是有效的建筑物页面
+            if not self.is_valid_building_page():
+                print(f"⚠️  {address[:30]}{'...' if len(address) > 30 else ''}  | 状态: 无效地址页面")
+                return {
+                    'data': None,
+                    'status': 'success',  # 标记为成功以触发重试
+                    'result_type': 'invalid_address',  # 新的结果类型
+                    'poi_count': 0,
+                    'is_building': False
+                }
+            
             # 快速检查酒店类别页面
             if has_hotel_category(self.driver,address):
                 if self.verbose:
@@ -295,23 +309,15 @@ class ChromeWorker(threading.Thread):
                 # 尝试备用方案获取地点名称
                 place_name = self._get_fallback_location_name(self.driver, address) or 'Unknown Location'
                     
-            # 尝试展开POI列表 - 重试时跳过滚动
-            if not is_retry:  # 只在非重试时执行完整的POI滚动
-                try:
-                    more_button = self.driver.find_elements('class name', 'M77dve')
-                    if more_button:
-                        click_on_more_button(self.driver)
-                        scroll_poi_section(self.driver)
-                except:
-                    pass
-            else:
-                # 重试时的简化检查，只等待基本元素加载
-                try:
-                    WebDriverWait(self.driver, 3).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".m6QErb.DxyBCb.kA9KIf.dS8AEf"))
-                    )
-                except:
-                    pass
+         
+            try:
+                more_button = self.driver.find_elements('class name', 'M77dve')
+                if more_button:
+                    click_on_more_button(self.driver)
+                    scroll_poi_section(self.driver)
+            except:
+                pass
+        
 
 
             df = get_all_poi_info(self.driver)
@@ -390,6 +396,27 @@ class ChromeWorker(threading.Thread):
             }
 
     
+    
+    def is_valid_building_page(self):
+        """仅用H1判断页面是否是有效的建筑物页面"""
+        try:
+            # 等待页面基本加载
+            WebDriverWait(self.driver, 3).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            
+            # 尝试获取H1
+            h1_elements = self.driver.find_elements(By.TAG_NAME, "h1")
+            if h1_elements and h1_elements[0].text.strip():
+                # 有有效的H1标题，是建筑物页面
+                return True
+            
+            # 没有H1或H1为空，是无效地址页面
+            return False
+            
+        except:
+            # 出错时保守处理，当作无效页面
+            return False
     
     def _get_fallback_location_name(self, driver, address):
         """获取备用位置名称"""
@@ -845,9 +872,10 @@ class SimplePOICrawler:
                 if self.processed_tasks % 10 == 0 and not self.interrupt_flag.is_set():
                     self._save_progress()
                 
-                # 检查是否需要使用日文地址重试（针对成功但无POI的情况）
+                # 检查是否需要使用日文地址重试
+                # 只对无效地址进行重试
                 if (result['success'] and 
-                    result.get('result_type') == 'not_building' and  # 只对非建筑物进行重试
+                    result.get('result_type') == 'invalid_address' and  # 只重试无效地址
                     result.get('original_address') and 
                     result['address'] != result['original_address'] and
                     not result.get('is_retry', False) and  # 避免重复重试
@@ -859,7 +887,7 @@ class SimplePOICrawler:
                     self.retry_cache.add(original_address)
                     
                     # 使用日文地址重试
-                    print(f"🔄 非建筑物，使用日文地址重试: {original_address[:30]}...")
+                    print(f"🔄 无效地址，使用日文地址重试: {original_address[:30]}...")
                     
                     retry_task = {
                         'address': original_address,
