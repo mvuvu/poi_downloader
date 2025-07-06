@@ -97,18 +97,19 @@ python poi_crawler_simple.py --all --no-progress
 python poi_crawler_simple.py --pattern "*.csv" --workers 8 --verbose --no-progress
 ```
 
-### 地址转换
+### 地址预处理要求
 
-```bash
-# 转换单个文件（日文地址→英文地址）
-python address_converter.py data/output/area_file.csv
+**重要**：用户需要自己预处理输入数据，准备多种地址格式以获得最佳爬取效果。
 
-# 批量转换所有文件
-python address_converter.py --all
+支持的地址字段（按优先级）：
+1. **FormattedAddress** - 标准化格式地址（优先使用）
+2. **Address** - 日文原始地址（重试时使用）
+3. **ConvertedAddress** - 英文转换地址（备用）
 
-# 强制重新转换
-python address_converter.py --regenerate
-```
+地址预处理建议：
+- 准备多种格式的地址数据提高成功率
+- 日文地址应包含完整的行政区划信息
+- 英文地址使用标准拼写和格式
 
 ## 数据格式
 
@@ -134,17 +135,20 @@ python address_converter.py --regenerate
 | lat | 纬度 | 35.6895 |
 | lng | 经度 | 139.6917 |
 
-### 地址转换示例
+### 地址处理优先级
 
-- **输入**：東京都千代田区神田駿河台3丁目1-1
-- **输出**：〒101-0062,+Tokyo,+Chiyoda+City,+Kandasurugadai,+3-chōme−1-1
+系统按以下优先级选择地址：
+1. **FormattedAddress** - 优先使用（如果存在且非空）
+2. **Address** - 日文原始地址
+3. **ConvertedAddress** - 标准化英文地址
+
+当 FormattedAddress 被识别为无效地址页面时，系统会自动使用 Address 的日文地址进行重试。
 
 ## 项目结构
 
 ```
 poi_crawler/
 ├── poi_crawler_simple.py          # 主程序 - 轻量化POI爬虫
-├── address_converter.py           # 地址转换工具
 ├── info_tool.py                  # POI信息提取模块
 ├── driver_action.py              # 浏览器自动化操作
 ├── requirements.txt              # Python依赖列表
@@ -155,9 +159,8 @@ poi_crawler/
     ├── output/                 # POI输出结果目录
     ├── progress/               # 进度跟踪文件目录
     ├── warnings/               # 警告日志目录
-    └── archive/                # 映射数据存档
-        ├── tokyo_complete_mapping.json  # 地址映射数据
-        └── x-ken-all.csv              # 邮编数据
+    └── archive/                # 历史数据存档
+        └── tokyo_complete_mapping.json  # 地址映射数据
 ```
 
 ## 高级功能
@@ -266,10 +269,11 @@ python poi_crawler_simple.py data/input/测试文件.csv --verbose --no-resume -
 
 ## 注意事项
 
-- 地址转换会直接覆盖原文件，请提前备份重要数据
+- 需要用户预处理输入数据为多种地址格式，以获得最佳重试效果
 - 爬取大量数据时请确保网络稳定
 - 遵守Google Maps服务条款，合理控制请求频率
 - 建议在非高峰时段运行大批量任务
+- 长时间运行数小时后性能会逐渐下降，建议分批处理
 
 ## 开发指南
 
