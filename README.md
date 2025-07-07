@@ -232,8 +232,8 @@ python poi_crawler_simple.py data/input/test_sample.csv --verbose
 ```
 
 ---
-##Legal & Disclaimer
 ##免责声明 / Disclaimer
+
 本项目的初衷是为了研究网页结构、自动化技术与城市空间特征的提取方法，不保证与任何特定网站兼容。
 项目不包含任何特定平台的接口调用或绕过机制，也不推荐直接用于 Google Maps 或任何受保护平台的数据爬取。
 
@@ -243,7 +243,8 @@ python poi_crawler_simple.py data/input/test_sample.csv --verbose
 
 如果你是地图数据开发者、研究者或公共机构，请考虑使用 Google Places API、OpenStreetMap 等官方数据接口。
 
-##Recommended Use Cases
+Recommended Use Cases
+
 城市空间研究 / Urban Research
 
 Web 自动化训练 / Web Automation Practice
