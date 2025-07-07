@@ -45,6 +45,10 @@ logs/
 chromedriver
 chromedriver.exe
 
+# Input files (except test sample)
+data/input/*.csv
+!data/input/test_sample.csv
+
 # Temp files
 *.tmp
 *.temp

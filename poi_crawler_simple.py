@@ -630,6 +630,10 @@ class SimplePOICrawler:
                 with self.progress_lock:
                     self.progress_bar.close()
                     self.progress_bar = None
+                    # 强制刷新终端显示
+                    import sys
+                    sys.stdout.flush()
+                    sys.stderr.flush()
             
             print("🔄 正在停止工作线程和清理资源...")
         
@@ -899,6 +903,12 @@ class SimplePOICrawler:
                     self.retry_queue.put(retry_task)
                     # 增加总任务数以包含重试任务
                     self.total_tasks += 1
+                    
+                    # 更新进度条的总任务数
+                    if self.progress_bar:
+                        with self.progress_lock:
+                            self.progress_bar.total = self.total_tasks
+                            self.progress_bar.refresh()
                 
                 # 调试：记录所有result_type的分布（只在verbose模式）
                 if self.verbose and self.processed_tasks % 50 == 0:
@@ -989,6 +999,12 @@ class SimplePOICrawler:
                 # 关闭旧的进度条
                 if self.progress_bar:
                     self.progress_bar.close()
+                    self.progress_bar = None
+                    # 强制刷新终端显示
+                    import sys
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    time.sleep(0.1)  # 短暂等待确保清理完成
                 
                 # 创建新的进度条
                 self.progress_bar = tqdm(
@@ -1033,6 +1049,10 @@ class SimplePOICrawler:
             if self.progress_bar:
                 self.progress_bar.close()
                 self.progress_bar = None
+                # 强制刷新终端显示
+                import sys
+                sys.stdout.flush()
+                sys.stderr.flush()
         
         # 保存最终进度并清理（只在未中断时）
         if not self.interrupt_flag.is_set():

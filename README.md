@@ -15,10 +15,10 @@
 - **自动去重** - 批次级数据去重机制
 - **错误监控** - 完善的错误日志和警告系统
 - **坐标提取** - 从Google Maps URL自动提取经纬度坐标
-- **地址标准化** - 支持日文地址转换为英文格式
+- **多格式地址支持** - 支持日文、英文等多种地址格式输入
 
 ### 🛠 操作便利性
-- **多种文件选择方式** - 支持单文件、多文件、通配符、文件列表
+- **多种文件选择方式** - 支持单文件、通配符模式、文件列表
 - **灵活参数配置** - 可调节工作线程数、批次大小等参数
 - **详细日志输出** - 可选的详细日志模式，便于调试
 - **状态监控** - 实时查看爬取进度和统计信息
@@ -62,17 +62,11 @@ python poi_crawler_simple.py --all
 # 处理单个文件
 python poi_crawler_simple.py data/input/千代田区_complete.csv
 
-# 处理多个指定文件
-python poi_crawler_simple.py file1.csv file2.csv file3.csv
-
 # 使用通配符选择文件
 python poi_crawler_simple.py --pattern "data/input/*区_complete*.csv"
 
 # 从文件列表读取
 python poi_crawler_simple.py --file-list files_to_process.txt
-
-# 查看爬取状态
-python poi_crawler_simple.py --status
 ```
 
 ### 高级选项
@@ -93,21 +87,22 @@ python poi_crawler_simple.py --all --no-resume
 # 禁用进度条（适合脚本环境）
 python poi_crawler_simple.py --all --no-progress
 
-# 组合使用
-python poi_crawler_simple.py --pattern "*.csv" --workers 8 --verbose --no-progress
+# 调试模式（单线程+详细日志）
+python poi_crawler_simple.py data/input/test_sample.csv --workers 1 --verbose
+
+# 生产环境（禁用进度条，适合脚本）
+python poi_crawler_simple.py --all --no-progress
 ```
 
-### 地址预处理要求
+### 地址处理说明
 
-**重要**：用户需要自己预处理输入数据，准备多种地址格式以获得最佳爬取效果。
-
-支持的地址字段（按优先级）：
+系统支持的地址字段（按优先级）：
 1. **FormattedAddress** - 标准化格式地址（优先使用）
 2. **Address** - 日文原始地址（重试时使用）
 3. **ConvertedAddress** - 英文转换地址（备用）
 
-地址预处理建议：
-- 准备多种格式的地址数据提高成功率
+地址处理建议：
+- 准备多种格式的地址数据可提高成功率
 - 日文地址应包含完整的行政区划信息
 - 英文地址使用标准拼写和格式
 
@@ -115,12 +110,14 @@ python poi_crawler_simple.py --pattern "*.csv" --workers 8 --verbose --no-progre
 
 ### 输入CSV格式要求
 
-| 列名 | 说明 | 示例 |
-|------|------|------|
-| District | 区域名称 | 千代田区 |
-| Latitude | 纬度坐标 | 35.6895 |
-| Longitude | 经度坐标 | 139.6917 |
-| Address | 日文地址 | 東京都千代田区神田駿河台3丁目1-1 |
+| 列名 | 说明 | 示例 | 必需 |
+|------|------|------|------|
+| District | 区域名称 | 千代田区 | 是 |
+| Latitude | 纬度坐标 | 35.6895 | 是 |
+| Longitude | 经度坐标 | 139.6917 | 是 |
+| Address | 日文地址 | 東京都千代田区神田駿河台3丁目1-1 | 是 |
+| ConvertedAddress | 英文转换地址 | 〒101-0062,+Tokyo,+Chiyoda+City... | 可选 |
+| FormattedAddress | 标准化地址 | 3-chōme-1-1+Kanda+Surugadai... | 可选 |
 
 ### POI输出数据字段
 
@@ -140,7 +137,7 @@ python poi_crawler_simple.py --pattern "*.csv" --workers 8 --verbose --no-progre
 系统按以下优先级选择地址：
 1. **FormattedAddress** - 优先使用（如果存在且非空）
 2. **Address** - 日文原始地址
-3. **ConvertedAddress** - 标准化英文地址
+3. **ConvertedAddress** - 英文转换地址
 
 当 FormattedAddress 被识别为无效地址页面时，系统会自动使用 Address 的日文地址进行重试。
 
@@ -269,7 +266,7 @@ python poi_crawler_simple.py data/input/测试文件.csv --verbose --no-resume -
 
 ## 注意事项
 
-- 需要用户预处理输入数据为多种地址格式，以获得最佳重试效果
+- 提供多种地址格式可获得最佳爬取效果
 - 爬取大量数据时请确保网络稳定
 - 遵守Google Maps服务条款，合理控制请求频率
 - 建议在非高峰时段运行大批量任务
@@ -281,12 +278,29 @@ python poi_crawler_simple.py data/input/测试文件.csv --verbose --no-resume -
 
 ## 技术架构
 
-- **单进程多线程**：10个持久化Chrome工作线程
+### 核心特性
+- **单进程多线程**：默认10个持久化Chrome工作线程
 - **双队列系统**：主任务队列 + 高优先级重试队列
 - **结果缓存**：批量写入机制，提高I/O效率
 - **进度管理**：JSON格式的断点续传支持
-- **Chrome优化**：无头模式运行，资源使用优化
+- **Chrome优化**：无头模式运行，禁用图片/JS等资源
 - **智能检测**：基于H1标题的页面类型快速识别
+
+### 文件说明
+- `poi_crawler_simple.py` - 主程序入口，管理线程池和任务队列
+- `info_tool.py` - POI数据提取，包含XPath选择器
+- `driver_action.py` - 浏览器自动化操作（滚动、点击等）
+
+---
+
+## 测试样例
+
+项目包含测试样例文件 `data/input/test_sample.csv`，包含8条东京知名地点的测试数据，可用于快速验证系统功能。
+
+```bash
+# 使用测试文件验证系统
+python poi_crawler_simple.py data/input/test_sample.csv --verbose
+```
 
 ---
 
