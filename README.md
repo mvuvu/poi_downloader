@@ -93,9 +93,9 @@ python poi_crawler_simple.py --all --no-progress
 
 | 列名             | 说明         | 示例                               | 必需 |
 | ---------------- | ------------ | ---------------------------------- | ---- |
-| District         | 区域名称     | 千代田区                           | 是   |
-| Latitude         | 纬度坐标     | 35.6895                            | 是   |
-| Longitude        | 经度坐标     | 139.6917                           | 是   |
+| District         | 区域名称     | 千代田区                           | 可选   |
+| Latitude         | 纬度坐标     | 35.6895                            | 可选  |
+| Longitude        | 经度坐标     | 139.6917                           | 可选   |
 | Address          | 日文地址     | 東京都千代田区神田駿河台3丁目1-1   | 是   |
 | ConvertedAddress | 英文转换地址 | 〒101-0062,+Tokyo,+Chiyoda+City... | 可选 |
 | FormattedAddress | 标准化地址   | 3-chōme-1-1+Kanda+Surugadai...    | 可选 |
